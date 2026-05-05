@@ -1,0 +1,46 @@
+{
+  "title": "每日投资日报（指数 + 头部个股）-mahaoan",
+  "history_days": 400,
+  "ma_windows": [
+    20,
+    50,
+    200
+  ],
+  "benchmark": "^GSPC",
+  "watchlist": {
+    "indices": {
+      "^GSPC": "S&P 500",
+      "^IXIC": "NASDAQ",
+      "^HSI": "Hang Seng",
+      "000300.SS": "CSI 300"
+    },
+    "risk": {
+      "^VIX": "VIX",
+      "DX-Y.NYB": "DXY",
+      "CL=F": "WTI",
+      "GC=F": "Gold",
+      "^TNX": "US10Y"
+    },
+    "stocks": {
+      "QQQ": "Invesco QQQ",
+      "AAPL": "Apple",
+      "MSFT": "Microsoft",
+      "NVDA": "NVIDIA",
+      "TSLA": "Tesla"
+    },
+    "sentiment": {}
+  },
+  "output_md": true,
+  "output_html": true,
+  "email": {
+    "enabled": false,
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "smtp_user": "your_email@qq.com",
+    "smtp_password": "your_smtp_app_password",
+    "to": [
+      "to_email@example.com"
+    ],
+    "subject_prefix": "[日报]"
+  }
+}
