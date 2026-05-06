@@ -2,6 +2,7 @@
 indices,US,^NDX,纳斯达克100指数
 indices,US,QQQ,纳斯达克100基金
 indices,US,TQQQ,三倍纳斯达克100基金
+indices,US,^VIX,恐慌指数
 indices,CN,^HSI,恒生指数
 indices,CN,000300.SS,沪深300指数
 indices,CN,000001.SS,上证综合指数
