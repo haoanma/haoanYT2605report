@@ -3,8 +3,7 @@
 
 """
 投资日报（包含 MA200 + VIX 22/34 双擎策略置顶看盘）- 网页轻量版
-- 移除 Playwright/PDF 依赖，仅生成轻量 index.html
-- 信号降噪：除了 QQQ 和 TQQQ，其他标的均隐藏操作和趋势信号
+- 模块列名高度定制化：全球市场采用极简动量视角（日/月/年涨幅），分地域排列
 """
 
 import os
@@ -19,40 +18,24 @@ from jinja2 import Environment, BaseLoader
 
 LOCAL_TZ = tz.gettz("Asia/Shanghai")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 生成的文件将放在 public 文件夹中，方便直接部署为静态网站
 REPORT_DIR = os.path.join(PROJECT_DIR, "public")
 
 DEFAULT_CONFIG = {
     "title": "每日投资日报",
-    "history_days": 400,
+    "history_days": 400, # 确保足够计算 250日（年涨幅）
     "ma_windows": [20, 50, 200],
-    "split_by_market": True,
     "base_font_px": 14,
-    "table_font_px": 12,
-    "dense": False
+    "table_font_px": 12
 }
 
-HK_INDEX_SET = {"^HSI", "^HSCE", "^HSCC"}
-US_INDEX_SET = {"^GSPC", "^NDX", "^IXIC", "^DJI", "^VIX", "^RUT"}
-
+# 🟢 全新列名映射：将程序代码映射为直观的中文名称
 CN_COL_MAP = {
-    "Name": "名称", "Ticker": "代码", "Close": "收盘价", "ChangePct": "涨跌幅(%)",
-    "VolRatio": "量比", "Ret5D": "近5日(%)", "Ret20D": "近20日(%)",
-    "MA20": "MA20", "MA50": "MA50", "MA200": "MA200",
+    "Name": "名称", "Ticker": "代码", "Close": "收盘价", 
+    "ChangePct": "日涨幅(%)", "Ret5D": "周涨幅(%)", 
+    "Ret20D": "月涨幅(%)", "Ret250D": "年涨幅(%)",
+    "VolRatio": "量比", "MA20": "MA20", "MA50": "MA50", "MA200": "MA200",
     "StrategyHint": "策略状态", "DailyAction": "今日操作", "Trend": "趋势",
 }
-
-def infer_market_fallback(ticker: str) -> str:
-    t = (ticker or "").upper().strip()
-    if not t: return "其他"
-    if t in HK_INDEX_SET or t.endswith(".HK"): return "港股"
-    if t.endswith(".SS") or t.endswith(".SZ"): return "A股"
-    if t in US_INDEX_SET: return "美股"
-    if t.isdigit() and len(t) == 6 and (t.startswith("60") or t.startswith("00") or t.startswith("30")): return "A股"
-    if t.startswith("^"): return "美股"
-    if "." not in t and not t.startswith("^"): return "美股"
-    if "=X" in t or "-" in t: return "全球"
-    return "其他"
 
 def ensure_default_watchlist_csv(path: str):
     if os.path.exists(path): return
@@ -62,6 +45,9 @@ def ensure_default_watchlist_csv(path: str):
         w.writerow(["category", "market", "ticker", "name"])
         w.writerow(["indices", "US", "^GSPC", "标普500指数"])
         w.writerow(["indices", "US", "^NDX", "纳斯达克100指数"])
+        w.writerow(["indices", "HK", "^HSI", "恒生指数"])
+        w.writerow(["indices", "JP", "^N225", "日经225指数"])
+        w.writerow(["indices", "EU", "^STOXX50E", "欧洲斯托克50"])
         w.writerow(["sectors", "US", "QQQ", "纳斯达克100ETF（QQQ）"])
         w.writerow(["strategy", "US", "TQQQ", "纳斯达克三倍做多（TQQQ）"])
         w.writerow(["risk", "US", "^VIX", "恐慌指数VIX"])
@@ -79,23 +65,21 @@ def load_watchlist_from_csv(path: str) -> dict:
             ticker = (row.get("ticker") or "").strip()
             name = (row.get("name") or "").strip()
             if not (cat and ticker and name): continue
-            market = (row.get("market") or "").strip() if has_market else ""
+            
+            market = (row.get("market") or "").strip() if has_market else "US"
             market = market.upper()
-            if market in ("美股", "US", "USA"): market = "US"
-            elif market in ("港股", "HK", "HKG"): market = "HK"
-            elif market in ("A股", "CN", "CHN", "CHINA"): market = "CN"
-            elif market in ("GL", "GLOBAL", "世界", "全球"): market = "GL"
-            elif market in ("OTHER", "OTHERS", "其他"): market = "OT"
+            # 兼容各种市场的缩写
+            if market in ("美股", "USA"): market = "US"
+            elif market in ("港股", "HKG"): market = "HK"
+            elif market in ("A股", "CHN", "CHINA"): market = "CN"
+            elif market in ("日本", "JAPAN"): market = "JP"
+            elif market in ("亚洲", "ASIA"): market = "ASIA"
+            elif market in ("欧洲", "EUROPE", "EURO"): market = "EU"
+            elif market in ("英国", "UK"): market = "UK"
+            
             wl.setdefault(cat, [])
-            wl[cat].append({"ticker": ticker, "name": name, "market": market})
+            wl[cat].append({"category": cat, "ticker": ticker, "name": name, "market": market})
     return wl
-
-def deep_merge_dict(base: dict, updates: dict) -> dict:
-    out = dict(base)
-    for k, v in (updates or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict): out[k] = deep_merge_dict(out[k], v)
-        else: out[k] = v
-    return out
 
 def _safe_float(x):
     try:
@@ -183,8 +167,10 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
                     elif curr < curr_ma200: strategy_hint = f"阴跌假摔 (VIX={curr_vix:.1f})"
                     else: strategy_hint = "MA200附近震荡"
 
+            # 🟢 核心优化：计算周、月、年涨幅
             ret_vals = {}
-            for w in [5, 20]: ret_vals[f"Ret{w}D"] = _safe_float((close.iloc[-1] / close.iloc[-1-w] - 1)*100) if len(close)>w else np.nan
+            for w in [5, 20, 250]: # 5交易日(周), 20交易日(月), 250交易日(年)
+                ret_vals[f"Ret{w}D"] = _safe_float((close.iloc[-1] / close.iloc[-1-w] - 1)*100) if len(close)>w else np.nan
 
             vol_ratio = np.nan
             if "Volume" in df_t.columns and len(df_t) >= 22:
@@ -286,7 +272,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             
             html_rows += f"<tr><td style='padding:12px; border-bottom:1px solid #E4E7EC; font-weight:bold; width:20%;'>{tk}</td><td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold;'>{txt}</td></tr>"
         
-        return {"title": "🎯 核心标的今日操作", "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"}
+        return {"title": "🎯 今日核心动作 (QQQ & TQQQ)", "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"}
     except Exception: return None
 
 def df_to_html_table(df: pd.DataFrame) -> str:
@@ -299,7 +285,8 @@ def df_to_html_table(df: pd.DataFrame) -> str:
         cls = "pos" if v > 0 else ("neg" if v < 0 else "")
         return f'<span class="{cls}">{v:.2f}</span>' if cls else f"{v:.2f}"
 
-    for col in ["涨跌幅(%)", "近5日(%)", "近20日(%)"]:
+    # 支持日、周、月、年涨幅的颜色渲染
+    for col in ["日涨幅(%)", "周涨幅(%)", "月涨幅(%)", "年涨幅(%)"]:
         if col in df2.columns: df2[col] = df2[col].apply(fmt_pct)
         
     numeric_cols = ["收盘价", "量比", "MA20", "MA50", "MA200"]
@@ -309,7 +296,6 @@ def df_to_html_table(df: pd.DataFrame) -> str:
     if "策略状态" in df2.columns:
         def _fmt_hint(x):
             s = str(x).strip() if x is not None else ""
-            if s == "-": return '<span style="color:#D0D5DD">-</span>'
             if "恐慌" in s or "突破" in s or "买点" in s: return f'<span class="pos">🟢 {s}</span>'
             if "砸穿" in s or "跌穿" in s or "高压" in s: return f'<span class="neg">🔴 {s}</span>'
             if "持仓" in s or "平稳" in s: return f'<span class="pos" style="opacity:0.8">{s}</span>'
@@ -321,7 +307,6 @@ def df_to_html_table(df: pd.DataFrame) -> str:
     if "今日操作" in df2.columns:
         def _fmt_action(x):
             s = str(x).strip() if x is not None else ""
-            if s == "-": return '<span style="color:#D0D5DD">-</span>'
             if "买入" in s: return f'<span class="pos">🟢 {s}</span>'
             if "卖出" in s: return f'<span class="neg">🔴 {s}</span>'
             if "收息" in s: return f'<span style="color:#B8860B;">💵 {s}</span>'
@@ -334,11 +319,15 @@ def df_to_html_table(df: pd.DataFrame) -> str:
 def main():
     os.makedirs(REPORT_DIR, exist_ok=True)
     config_path = os.path.join(PROJECT_DIR, "config.json")
-    cfg = deep_merge_dict(DEFAULT_CONFIG, json.load(open(config_path, "r", encoding="utf-8")) if os.path.exists(config_path) else {})
+    cfg = json.load(open(config_path, "r", encoding="utf-8")) if os.path.exists(config_path) else DEFAULT_CONFIG
     
     watchlist_path = os.path.join(PROJECT_DIR, "watchlist.csv")
     ensure_default_watchlist_csv(watchlist_path)
     wl = load_watchlist_from_csv(watchlist_path)
+    
+    all_items = []
+    for items in wl.values():
+        all_items.extend(items)
     
     dt = datetime.now(tz=LOCAL_TZ)
     report_date = dt.strftime("%Y-%m-%d")
@@ -347,31 +336,48 @@ def main():
     action_block = get_today_action_block(["QQQ", "TQQQ"])
     if action_block: blocks.append(action_block)
 
+    # 🟢 核心重构：不仅分类，更是彻底定制每一类的列名！
+    # 外围市场直接砍掉繁琐的均线和策略状态，只保留 日/月/年涨幅
     sections = [
-        ("indices", "大盘指数", ["Name", "Ticker", "Close", "ChangePct", "Ret5D", "Ret20D", "MA20", "MA50", "MA200", "StrategyHint", "DailyAction", "Trend"]),
-        ("sectors", "行业/主题指数 (ETF)", ["Name", "Ticker", "Close", "ChangePct", "Ret5D", "Ret20D", "MA200", "StrategyHint", "DailyAction", "Trend", "VolRatio"]),
-        ("strategy", "核心策略标的", ["Name", "Ticker", "Close", "ChangePct", "Ret5D", "MA200", "StrategyHint", "DailyAction", "Trend"]),
-        ("stocks", "重点个股", ["Name", "Ticker", "Close", "ChangePct", "Ret5D", "MA200", "StrategyHint", "DailyAction", "Trend", "VolRatio"]),
-        ("risk", "风险与宏观", ["Name", "Ticker", "Close", "ChangePct", "Ret5D", "Ret20D", "MA20"])
+        ("🎯 核心主要标的 (大仓位)", 
+         lambda it: it["ticker"] in ["QQQ", "TQQQ"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "StrategyHint", "DailyAction", "Trend"]),
+         
+        ("🇺🇸 美国宏观指标 (大盘 & 风险)", 
+         lambda it: it["category"] in ["indices", "risk"] and it["market"] == "US" and it["ticker"] not in ["QQQ", "TQQQ"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA50", "MA200"]),
+         
+        ("🌏 亚洲市场横向对比", 
+         lambda it: it["category"] == "indices" and it["market"] in ["HK", "CN", "JP", "IN", "ASIA"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D"]),
+         
+        ("🇪🇺 欧洲及其他市场", 
+         lambda it: it["category"] == "indices" and it["market"] in ["EU", "UK", "EUROPE", "GL", "OT"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D"]),
+         
+        ("📊 行业情况 (ETF)", 
+         lambda it: it["category"] == "sectors" and it["ticker"] not in ["QQQ", "TQQQ"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "VolRatio"]),
+         
+        ("🏢 重点个股跟踪", 
+         lambda it: it["category"] == "stocks", 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "VolRatio"])
     ]
 
-    for key, title, cols in sections:
-        items = wl.get(key, [])
+    for title, condition, cols in sections:
+        items = [it for it in all_items if condition(it)]
         if not items: continue
+        
         df = fetch_and_calculate({it["ticker"]: it["name"] for it in items}, cfg.get("history_days", 400), cfg.get("ma_windows", [20, 50, 200]))
         df = add_trend_flags(df)
         if df.empty: continue
         
-        # 只保留所需列，如果是涨跌幅则按涨跌幅倒序
+        # 裁剪列，排序
         final_cols = [c for c in cols if c in df.columns]
         df_show = df[final_cols].copy()
         if "ChangePct" in df_show.columns: df_show = df_show.sort_values("ChangePct", ascending=False)
         
-        # 🟢 【核心优化】：对非 QQQ / TQQQ 的标的，隐藏策略和操作列
-        for col in ["StrategyHint", "DailyAction", "Trend"]:
-            if col in df_show.columns:
-                df_show.loc[~df_show["Ticker"].isin(["QQQ", "TQQQ"]), col] = "-"
-        
+        # 将英文列名翻译为中文显示
         df_show = df_show.rename(columns={c: CN_COL_MAP.get(c, c) for c in df_show.columns})
         html_table = df_to_html_table(df_show)
         if html_table: blocks.append({"title": title, "html_table": html_table})
