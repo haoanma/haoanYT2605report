@@ -26,10 +26,10 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: 3. 安装依赖 (移除了 Playwright，速度极快)
+    - name: 3. 安装依赖 (引入了 Nasdaq 库)
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy yfinance jinja2 python-dateutil
+        pip install pandas numpy yfinance jinja2 python-dateutil nasdaq-data-link
 
     - name: 4. 运行投资日报脚本
       run: python report.py
