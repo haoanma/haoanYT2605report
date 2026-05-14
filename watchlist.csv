@@ -41,7 +41,6 @@ indices,GL,^GDAXI,德国DAX指数
 indices,GL,^FCHI,法国CAC40指数
 indices,GL,^TWII,台湾加权指数
 indices,GL,^AXJO,澳大利亚S&P/ASX 200指数
-indices,GL,^BSESN,印度SENSEX指数
 stocks,US,AMZN,亚马逊
 stocks,US,META,Meta（Facebook）
 stocks,US,BRK-B,伯克希尔B
