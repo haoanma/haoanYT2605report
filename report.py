@@ -96,79 +96,98 @@ def _safe_float(x):
 # ==========================================
 # 🚨 核心风控模块：深度宏观预警 (Nasdaq API)
 # ==========================================
+# ==========================================
+# 🚨 核心风控：宏观泡沫与流动性预警 (防弹优化版)
+# ==========================================
 def fetch_macro_and_bubble_indicators(api_key: str) -> dict:
     if not api_key: return None
     nasdaqdatalink.ApiConfig.api_key = api_key
+    
+    # 初始化变量，防止403报错时变量未定义
+    fed_curr, cape_curr = "N/A", "N/A"
+    yield_curr, yield_prev = "N/A", "N/A"
+    cred_curr = "N/A"
+    cape_color, yield_color, cred_color = "#667085", "#667085", "#667085"
+    yield_trend = "数据暂缺"
+
+    # 1. 独立抓取: 联邦基金利率 (FRED 免费)
     try:
-        # 1. 纳斯达克宏观数据拉取
-        fed_rate_data = nasdaqdatalink.get("FRED/FEDFUNDS", rows=2)
-        fed_curr = fed_rate_data.iloc[-1].values[0]
-        
-        cape_data = nasdaqdatalink.get("MULTPL/SHILLER_PE_RATIO_MONTH", rows=1)
-        cape_curr = cape_data.iloc[-1].values[0]
-        cape_color = "#B42318" if cape_curr > 35 else "#027A48"
-        
+        fed_data = nasdaqdatalink.get("FRED/FEDFUNDS", rows=1)
+        fed_curr = f"{fed_data.iloc[-1].values[0]:.2f}%"
+    except Exception as e: print(f"FRED/FEDFUNDS 失败: {e}")
+
+    # 2. 独立抓取: 10Y-2Y 期限利差 (FRED 免费)
+    try:
         t10y2y = nasdaqdatalink.get("FRED/T10Y2Y", rows=2)
-        yield_curr = t10y2y.iloc[-1].values[0]
-        yield_prev = t10y2y.iloc[-2].values[0]
-        yield_trend = "倒挂转正(高危)" if yield_curr > 0 and yield_prev < 0 else ("倒挂中" if yield_curr < 0 else "正常")
+        yc = t10y2y.iloc[-1].values[0]
+        yp = t10y2y.iloc[-2].values[0]
+        yield_curr = f"{yc:.2f}%"
+        yield_trend = "倒挂转正(高危)" if yc > 0 and yp < 0 else ("倒挂中" if yc < 0 else "正常")
         yield_color = "#B42318" if "高危" in yield_trend else "#027A48"
-        
+    except Exception as e: print(f"FRED/T10Y2Y 失败: {e}")
+
+    # 3. 独立抓取: 高收益债信用利差 (FRED 免费)
+    try:
         hy_spread = nasdaqdatalink.get("FRED/BAMLH0A0HYM2", rows=1)
-        cred_curr = hy_spread.iloc[-1].values[0]
-        cred_color = "#B42318" if cred_curr > 5.0 else "#027A48"
+        cc = hy_spread.iloc[-1].values[0]
+        cred_curr = f"{cc:.2f}%"
+        cred_color = "#B42318" if cc > 5.0 else "#027A48"
+    except Exception as e: print(f"FRED/BAMLH0A0HYM2 失败: {e}")
 
-        # 2. 微观巨头估值扭曲拉取 (P/S)
-        tech_titans = ["NVDA", "MSFT", "AAPL"]
-        ps_html_parts = []
-        for tk in tech_titans:
-            try:
-                info = yf.Ticker(tk).info
-                ps = info.get('priceToSalesTrailing12Months', 0)
-                color = "#B42318" if ps > 20 else ("#B8860B" if ps > 10 else "#027A48")
-                ps_html_parts.append(f"{tk}: <span style='color:{color}; font-weight:bold;'>{ps:.1f}x</span>")
-            except:
-                ps_html_parts.append(f"{tk}: N/A")
-        ps_display = " | ".join(ps_html_parts)
+    # 4. 独立抓取: 席勒市盈率 (MULTPL 可能遇到403限流)
+    try:
+        cape_data = nasdaqdatalink.get("MULTPL/SHILLER_PE_RATIO_MONTH", rows=1)
+        cp = cape_data.iloc[-1].values[0]
+        cape_curr = f"{cp:.1f}倍"
+        cape_color = "#B42318" if cp > 35 else "#027A48"
+    except Exception as e: print(f"MULTPL/SHILLER_PE 失败 (可能被限流): {e}")
 
-        # 3. 渲染 HTML
-        html = f"""
-        <table style="width:100%; border-collapse: collapse; text-align: left; font-size: 13px;">
-            <tr>
-                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold; width: 35%;">
-                    📉 估值扭曲警报<br><span style="font-size:11px; color:#667085; font-weight:normal;">巨头市销率(P/S) & 席勒市盈率(CAPE)</span>
-                </td>
-                <td style="padding: 10px; border: 1px solid #E4E7EC;">
-                    标普500 CAPE: <b style="color:{cape_color}">{cape_curr:.1f}倍</b> (1999年极值为44)<br>
-                    核心巨头 P/S: {ps_display} <br>
-                    <span style="font-size:11px; color:#667085;">* 注：P/S > 20倍为纯数学级估值扭曲信号</span>
-                </td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
-                    🚰 流动性与衰退预警<br><span style="font-size:11px; color:#667085; font-weight:normal;">基准利率 & 期限利差 (10Y-2Y)</span>
-                </td>
-                <td style="padding: 10px; border: 1px solid #E4E7EC;">
-                    联邦基金利率: <b>{fed_curr:.2f}%</b> <br>
-                    10Y-2Y 美债利差: <b style="color:{yield_color}">{yield_curr:.2f}%</b> ({yield_trend})<br>
-                    <span style="font-size:11px; color:#667085;">* 注：高息环境下利差从倒挂急剧转正，往往对应股市崩盘起点</span>
-                </td>
-            </tr>
-            <tr>
-                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
-                    🧨 资金链断裂预警<br><span style="font-size:11px; color:#667085; font-weight:normal;">美国高收益债信用利差 (垃圾债)</span>
-                </td>
-                <td style="padding: 10px; border: 1px solid #E4E7EC; color: {cred_color};">
-                    当前利差: <b>{cred_curr:.2f}%</b> <br>
-                    <span style="font-size:11px; color:#667085;">* 注：突破5%代表华尔街极度避险，连环爆仓概率急剧上升</span>
-                </td>
-            </tr>
-        </table>
-        """
-        return {"title": "🚨 宏观泡沫与流动性预警 (深度数据源)", "html_table": html}
-    except Exception as e:
-        print(f"深度宏观数据拉取失败: {e}")
-        return None
+    # 5. 抓取巨头 P/S 估值 (yfinance，不受 Nasdaq 影响)
+    tech_titans = ["NVDA", "MSFT", "AAPL"]
+    ps_html_parts = []
+    for tk in tech_titans:
+        try:
+            info = yf.Ticker(tk).info
+            ps = info.get('priceToSalesTrailing12Months', 0)
+            color = "#B42318" if ps > 20 else ("#B8860B" if ps > 10 else "#027A48")
+            ps_html_parts.append(f"{tk}: <span style='color:{color}; font-weight:bold;'>{ps:.1f}x</span>")
+        except: ps_html_parts.append(f"{tk}: N/A")
+    ps_display = " | ".join(ps_html_parts)
+
+    # 6. 渲染 HTML
+    html = f"""
+    <table style="width:100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+        <tr>
+            <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold; width: 35%;">
+                📉 估值扭曲警报<br><span style="font-size:11px; color:#667085; font-weight:normal;">巨头市销率(P/S) & 席勒市盈率(CAPE)</span>
+            </td>
+            <td style="padding: 10px; border: 1px solid #E4E7EC;">
+                标普500 CAPE: <b style="color:{cape_color}">{cape_curr}</b> (1999年极值为44)<br>
+                核心巨头 P/S: {ps_display} <br>
+                <span style="font-size:11px; color:#667085;">* 注：P/S > 20倍为纯数学级泡沫信号</span>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
+                🚰 宏观流动性与衰退<br><span style="font-size:11px; color:#667085; font-weight:normal;">基准利率 & 期限利差 (10Y-2Y)</span>
+            </td>
+            <td style="padding: 10px; border: 1px solid #E4E7EC;">
+                联邦基金利率: <b>{fed_curr}</b> <br>
+                10Y-2Y 美债利差: <b style="color:{yield_color}">{yield_curr}</b> ({yield_trend})
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
+                🧨 资金链断裂预警<br><span style="font-size:11px; color:#667085; font-weight:normal;">美国垃圾债信用利差</span>
+            </td>
+            <td style="padding: 10px; border: 1px solid #E4E7EC; color: {cred_color};">
+                当前利差: <b>{cred_curr}</b> <br>
+                <span style="font-size:11px; color:#667085;">* 注：利差突破5%代表系统性债务风险飙升</span>
+            </td>
+        </tr>
+    </table>
+    """
+    return {"title": "🚨 宏观泡沫与流动性预警 (Nasdaq Data Link)", "html_table": html}
 
 # ==========================================
 # 量价模型：提取自 yfinance
