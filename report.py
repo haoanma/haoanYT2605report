@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-投资日报（包含 MA200 + VIX 22/34 双擎策略置顶看盘）- 网页轻量版
-- 模块列名高度定制化：全球市场采用极简动量视角（日/月/年涨幅），分地域排列
+投资日报（终极版）- 网页轻量化 + 机构级宏观泡沫预警雷达
+- 移除臃肿的 PDF 渲染，仅生成极致清爽的 public/index.html
+- 引入 Nasdaq Data Link 底层宏观数据 (CAPE, 联邦基金利率, 期限利差, 信用利差)
+- 引入核心科技巨头市销率 (P/S) 监测
+- 模块列名高度定制化，外围市场采用极简动量视角（日/月/年涨幅）
 """
 
 import os
@@ -14,21 +17,25 @@ from dateutil import tz
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import nasdaqdatalink
 from jinja2 import Environment, BaseLoader
+
+# 你的专属 Nasdaq Data Link API Key
+NASDAQ_API_KEY = "xM_zshfJy_hqkhJwmxKF"
 
 LOCAL_TZ = tz.gettz("Asia/Shanghai")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORT_DIR = os.path.join(PROJECT_DIR, "public")
 
 DEFAULT_CONFIG = {
-    "title": "每日投资日报",
+    "title": "每日投资监控雷达",
     "history_days": 400, # 确保足够计算 250日（年涨幅）
     "ma_windows": [20, 50, 200],
     "base_font_px": 14,
     "table_font_px": 12
 }
 
-# 🟢 全新列名映射：将程序代码映射为直观的中文名称
+# 🟢 列名映射：将程序代码映射为直观的中文名称
 CN_COL_MAP = {
     "Name": "名称", "Ticker": "代码", "Close": "收盘价", 
     "ChangePct": "日涨幅(%)", "Ret5D": "周涨幅(%)", 
@@ -43,15 +50,14 @@ def ensure_default_watchlist_csv(path: str):
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["category", "market", "ticker", "name"])
-        w.writerow(["indices", "US", "^GSPC", "标普500指数"])
-        w.writerow(["indices", "US", "^NDX", "纳斯达克100指数"])
-        w.writerow(["indices", "HK", "^HSI", "恒生指数"])
-        w.writerow(["indices", "JP", "^N225", "日经225指数"])
-        w.writerow(["indices", "EU", "^STOXX50E", "欧洲斯托克50"])
-        w.writerow(["sectors", "US", "QQQ", "纳斯达克100ETF（QQQ）"])
-        w.writerow(["strategy", "US", "TQQQ", "纳斯达克三倍做多（TQQQ）"])
-        w.writerow(["risk", "US", "^VIX", "恐慌指数VIX"])
-        w.writerow(["stocks", "US", "AAPL", "苹果"])
+        w.writerow(["strategy", "US", "QQQ", "纳斯达克100ETF(底层资产)"])
+        w.writerow(["strategy", "US", "TQQQ", "纳斯达克三倍做多(核心进攻)"])
+        w.writerow(["strategy", "US", "SGOV", "0-3月美债ETF(空仓避险理财)"])
+        w.writerow(["risk", "US", "^VIX", "恐慌指数VIX(情绪开关)"])
+        w.writerow(["indices", "CN", "000300.SS", "沪深300指数(中国A股核心)"])
+        w.writerow(["indices", "HK", "^HSI", "恒生指数(离岸中国资产)"])
+        w.writerow(["indices", "JP", "^N225", "日经225指数(亚洲套息资金池)"])
+        w.writerow(["indices", "EU", "^STOXX50E", "欧洲斯托克50(欧洲基准)"])
 
 def load_watchlist_from_csv(path: str) -> dict:
     wl = {}
@@ -68,14 +74,11 @@ def load_watchlist_from_csv(path: str) -> dict:
             
             market = (row.get("market") or "").strip() if has_market else "US"
             market = market.upper()
-            # 兼容各种市场的缩写
             if market in ("美股", "USA"): market = "US"
             elif market in ("港股", "HKG"): market = "HK"
             elif market in ("A股", "CHN", "CHINA"): market = "CN"
             elif market in ("日本", "JAPAN"): market = "JP"
-            elif market in ("亚洲", "ASIA"): market = "ASIA"
             elif market in ("欧洲", "EUROPE", "EURO"): market = "EU"
-            elif market in ("英国", "UK"): market = "UK"
             
             wl.setdefault(cat, [])
             wl[cat].append({"category": cat, "ticker": ticker, "name": name, "market": market})
@@ -90,6 +93,86 @@ def _safe_float(x):
     except Exception:
         return np.nan
 
+# ==========================================
+# 🚨 核心风控模块：深度宏观预警 (Nasdaq API)
+# ==========================================
+def fetch_macro_and_bubble_indicators(api_key: str) -> dict:
+    if not api_key: return None
+    nasdaqdatalink.ApiConfig.api_key = api_key
+    try:
+        # 1. 纳斯达克宏观数据拉取
+        fed_rate_data = nasdaqdatalink.get("FRED/FEDFUNDS", rows=2)
+        fed_curr = fed_rate_data.iloc[-1].values[0]
+        
+        cape_data = nasdaqdatalink.get("MULTPL/SHILLER_PE_RATIO_MONTH", rows=1)
+        cape_curr = cape_data.iloc[-1].values[0]
+        cape_color = "#B42318" if cape_curr > 35 else "#027A48"
+        
+        t10y2y = nasdaqdatalink.get("FRED/T10Y2Y", rows=2)
+        yield_curr = t10y2y.iloc[-1].values[0]
+        yield_prev = t10y2y.iloc[-2].values[0]
+        yield_trend = "倒挂转正(高危)" if yield_curr > 0 and yield_prev < 0 else ("倒挂中" if yield_curr < 0 else "正常")
+        yield_color = "#B42318" if "高危" in yield_trend else "#027A48"
+        
+        hy_spread = nasdaqdatalink.get("FRED/BAMLH0A0HYM2", rows=1)
+        cred_curr = hy_spread.iloc[-1].values[0]
+        cred_color = "#B42318" if cred_curr > 5.0 else "#027A48"
+
+        # 2. 微观巨头估值扭曲拉取 (P/S)
+        tech_titans = ["NVDA", "MSFT", "AAPL"]
+        ps_html_parts = []
+        for tk in tech_titans:
+            try:
+                info = yf.Ticker(tk).info
+                ps = info.get('priceToSalesTrailing12Months', 0)
+                color = "#B42318" if ps > 20 else ("#B8860B" if ps > 10 else "#027A48")
+                ps_html_parts.append(f"{tk}: <span style='color:{color}; font-weight:bold;'>{ps:.1f}x</span>")
+            except:
+                ps_html_parts.append(f"{tk}: N/A")
+        ps_display = " | ".join(ps_html_parts)
+
+        # 3. 渲染 HTML
+        html = f"""
+        <table style="width:100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+            <tr>
+                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold; width: 35%;">
+                    📉 估值扭曲警报<br><span style="font-size:11px; color:#667085; font-weight:normal;">巨头市销率(P/S) & 席勒市盈率(CAPE)</span>
+                </td>
+                <td style="padding: 10px; border: 1px solid #E4E7EC;">
+                    标普500 CAPE: <b style="color:{cape_color}">{cape_curr:.1f}倍</b> (1999年极值为44)<br>
+                    核心巨头 P/S: {ps_display} <br>
+                    <span style="font-size:11px; color:#667085;">* 注：P/S > 20倍为纯数学级估值扭曲信号</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
+                    🚰 流动性与衰退预警<br><span style="font-size:11px; color:#667085; font-weight:normal;">基准利率 & 期限利差 (10Y-2Y)</span>
+                </td>
+                <td style="padding: 10px; border: 1px solid #E4E7EC;">
+                    联邦基金利率: <b>{fed_curr:.2f}%</b> <br>
+                    10Y-2Y 美债利差: <b style="color:{yield_color}">{yield_curr:.2f}%</b> ({yield_trend})<br>
+                    <span style="font-size:11px; color:#667085;">* 注：高息环境下利差从倒挂急剧转正，往往对应股市崩盘起点</span>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border: 1px solid #E4E7EC; background: #FAFAFB; font-weight: bold;">
+                    🧨 资金链断裂预警<br><span style="font-size:11px; color:#667085; font-weight:normal;">美国高收益债信用利差 (垃圾债)</span>
+                </td>
+                <td style="padding: 10px; border: 1px solid #E4E7EC; color: {cred_color};">
+                    当前利差: <b>{cred_curr:.2f}%</b> <br>
+                    <span style="font-size:11px; color:#667085;">* 注：突破5%代表华尔街极度避险，连环爆仓概率急剧上升</span>
+                </td>
+            </tr>
+        </table>
+        """
+        return {"title": "🚨 宏观泡沫与流动性预警 (深度数据源)", "html_table": html}
+    except Exception as e:
+        print(f"深度宏观数据拉取失败: {e}")
+        return None
+
+# ==========================================
+# 量价模型：提取自 yfinance
+# ==========================================
 def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[20, 50, 200]) -> pd.DataFrame:
     if not ticker_map: return pd.DataFrame()
     original_tickers = list(ticker_map.keys())
@@ -100,14 +183,11 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
             tickers_to_fetch, period=f"{history_days}d", interval="1d",
             auto_adjust=False, group_by="ticker", threads=True, progress=False
         )
-    except Exception:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
     if raw_data is None or raw_data.empty: return pd.DataFrame()
-    if "^VIX" in raw_data.columns.levels[0]:
-        vix_df = raw_data["^VIX"]["Close"].dropna().sort_index()
-    else:
-        vix_df = pd.Series(dtype=float)
+    if "^VIX" in raw_data.columns.levels[0]: vix_df = raw_data["^VIX"]["Close"].dropna().sort_index()
+    else: vix_df = pd.Series(dtype=float)
 
     rows = []
     for t in original_tickers:
@@ -137,9 +217,7 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
             curr_ma200 = _safe_float(ma200_series.iloc[-1]) if len(close) >= 200 else np.nan
             prev_ma200 = _safe_float(ma200_series.iloc[-2]) if len(close) >= 201 else np.nan
 
-            strategy_hint = ""
-            daily_action = "观望"
-            
+            strategy_hint, daily_action = "", "观望"
             if not np.isnan(prev) and not np.isnan(curr_ma200):
                 if t == "^VIX":
                     if curr > 34: strategy_hint, daily_action = "🔴 极度恐慌 (抄底)", "买点出现"
@@ -154,9 +232,8 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
                     is_buy_state = (curr > curr_ma200) or want_buy_panic
                     
                     prev_want_sell = (prev < prev_ma200) and (prev_vix > 22.0)
-                    prev_want_buy_panic = (_safe_float(vix_aligned.iloc[-3]) > 34.0) if len(vix_aligned)>=3 else False
-                    prev_is_sell_state = prev_want_sell and not prev_want_buy_panic
-                    prev_is_buy_state = (prev > prev_ma200) or prev_want_buy_panic
+                    prev_is_sell_state = prev_want_sell and not (_safe_float(vix_aligned.iloc[-3]) > 34.0 if len(vix_aligned)>=3 else False)
+                    prev_is_buy_state = (prev > prev_ma200) or (_safe_float(vix_aligned.iloc[-3]) > 34.0 if len(vix_aligned)>=3 else False)
 
                     if is_buy_state and not prev_is_buy_state and not is_sell_state:
                         strategy_hint, daily_action = ("！VIX恐慌抄底" if want_buy_panic else "！突破MA200"), "买入"
@@ -167,9 +244,8 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
                     elif curr < curr_ma200: strategy_hint = f"阴跌假摔 (VIX={curr_vix:.1f})"
                     else: strategy_hint = "MA200附近震荡"
 
-            # 🟢 核心优化：计算周、月、年涨幅
             ret_vals = {}
-            for w in [5, 20, 250]: # 5交易日(周), 20交易日(月), 250交易日(年)
+            for w in [5, 20, 250]: 
                 ret_vals[f"Ret{w}D"] = _safe_float((close.iloc[-1] / close.iloc[-1-w] - 1)*100) if len(close)>w else np.nan
 
             vol_ratio = np.nan
@@ -182,7 +258,7 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400, ma_windows=[2
                 "VolRatio": vol_ratio, "StrategyHint": strategy_hint, "DailyAction": daily_action,
                 **ma_vals, **ret_vals,
             })
-        except Exception: continue
+        except: continue
     return pd.DataFrame(rows)
 
 def add_trend_flags(df: pd.DataFrame) -> pd.DataFrame:
@@ -198,47 +274,6 @@ def add_trend_flags(df: pd.DataFrame) -> pd.DataFrame:
         return "强" if score == valid else ("弱" if score == -valid else "中")
     out["Trend"] = out.apply(judge, axis=1)
     return out
-
-# —— HTML 模板 (适配手机浏览) ——
-HTML_TEMPLATE = r"""
-<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>{{ title }} - {{ report_date }}</title>
-<style>
-  :root{ --fg:#111827; --muted:#667085; --border:#E4E7EC; --head:#F9FAFB; --stripe:#F9FAFB; --blue:#0B5ED7; }
-  body{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size: {{ base_font_px }}px; line-height: 1.4; color:var(--fg); margin:0; padding:12px; background:#F2F4F7;}
-  .wrap{ max-width: 800px; margin:0 auto; background:#fff; border-radius:12px; padding:16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);}
-  h1{ margin:0 0 4px; font-size: 20px; color:#101828; }
-  .meta{ color:var(--muted); font-size: 12px; margin-bottom: 12px;}
-  .card{ border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow:hidden;}
-  .card h2{ margin: 0; padding: 10px 12px; font-size: 15px; background: var(--head); border-bottom: 1px solid var(--border); color: #344054; }
-  .table-wrap { overflow-x: auto; }
-  table{ width:100%; border-collapse: collapse; font-size: {{ table_font_px }}px; white-space: nowrap; }
-  th, td{ border-bottom: 1px solid var(--border); padding: 8px 12px; text-align: right; }
-  th{ background: #fff; text-align: right; font-weight: 600; color:#475467; }
-  td:nth-child(1), th:nth-child(1), td:nth-child(2), th:nth-child(2){ text-align: left; }
-  tbody tr:hover{ background: var(--stripe); }
-  .pos{ color:#027A48; font-weight: 600; }
-  .neg{ color:#B42318; font-weight: 600; }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>{{ title }}</h1>
-  <div class="meta">{{ report_date }} | 美股收盘生成 | yfinance</div>
-  {% for b in blocks %}
-    <div class="card">
-      <h2>{{ b.title }}</h2>
-      <div class="table-wrap">{{ b.html_table | safe }}</div>
-    </div>
-  {% endfor %}
-</div>
-</body>
-</html>
-"""
 
 def get_today_action_block(tickers=["QQQ", "TQQQ"]):
     try:
@@ -261,19 +296,15 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             prev_buy = (prev["close"] > prev["ma200"]) or (prev["vix"] > 34.0)
             prev_sell = (prev["close"] < prev["ma200"]) and (prev["vix"] > 22.0)
 
-            if is_buy and not prev_buy and not is_sell:
-                txt, color = "🚨 【买入】触发买入信号！(突破MA200或VIX>34)", "#027A48"
-            elif is_sell and not prev_sell:
-                txt, color = "🚨 【卖出】触发卖出信号！(跌破MA200且VIX>22)", "#B42318"
+            if is_buy and not prev_buy and not is_sell: txt, color = "🚨 【买入】触发买入信号！(突破MA200或VIX>34)", "#027A48"
+            elif is_sell and not prev_sell: txt, color = "🚨 【卖出】触发卖出信号！(跌破MA200且VIX>22)", "#B42318"
             elif is_buy: txt, color = "✅ 【持有】建议持有做多。无新信号。", "#027A48"
             elif is_sell: txt, color = "🛑 【空仓】建议空仓吃息。无新信号。", "#B42318"
             elif latest["close"] < latest["ma200"]: txt, color = f"⚠️ 【观望】均线下阴跌(VIX {latest['vix']:.1f})。维持原仓", "#B8860B"
             else: txt, color = "⚠️ 【观望】处于均线胶着状态。", "#667085"
-            
             html_rows += f"<tr><td style='padding:12px; border-bottom:1px solid #E4E7EC; font-weight:bold; width:20%;'>{tk}</td><td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold;'>{txt}</td></tr>"
-        
         return {"title": "🎯 今日核心动作 (QQQ & TQQQ)", "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"}
-    except Exception: return None
+    except: return None
 
 def df_to_html_table(df: pd.DataFrame) -> str:
     if df is None or df.empty: return ""
@@ -285,12 +316,10 @@ def df_to_html_table(df: pd.DataFrame) -> str:
         cls = "pos" if v > 0 else ("neg" if v < 0 else "")
         return f'<span class="{cls}">{v:.2f}</span>' if cls else f"{v:.2f}"
 
-    # 支持日、周、月、年涨幅的颜色渲染
     for col in ["日涨幅(%)", "周涨幅(%)", "月涨幅(%)", "年涨幅(%)"]:
         if col in df2.columns: df2[col] = df2[col].apply(fmt_pct)
         
-    numeric_cols = ["收盘价", "量比", "MA20", "MA50", "MA200"]
-    for c in numeric_cols:
+    for c in ["收盘价", "量比", "MA20", "MA50", "MA200"]:
         if c in df2.columns: df2[c] = pd.to_numeric(df2[c], errors="coerce").round(2)
 
     if "策略状态" in df2.columns:
@@ -316,35 +345,80 @@ def df_to_html_table(df: pd.DataFrame) -> str:
 
     return df2.to_html(index=False, escape=False, border=0)
 
+# ==========================================
+# 网页模板与主程序
+# ==========================================
+HTML_TEMPLATE = r"""
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>{{ title }} - {{ report_date }}</title>
+<style>
+  :root{ --fg:#111827; --muted:#667085; --border:#E4E7EC; --head:#F9FAFB; --stripe:#F9FAFB; }
+  body{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size: {{ base_font_px }}px; line-height: 1.4; color:var(--fg); margin:0; padding:12px; background:#F2F4F7;}
+  .wrap{ max-width: 800px; margin:0 auto; background:#fff; border-radius:12px; padding:16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);}
+  h1{ margin:0 0 4px; font-size: 20px; color:#101828; }
+  .meta{ color:var(--muted); font-size: 12px; margin-bottom: 12px;}
+  .card{ border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow:hidden;}
+  .card h2{ margin: 0; padding: 10px 12px; font-size: 15px; background: var(--head); border-bottom: 1px solid var(--border); color: #344054; }
+  .table-wrap { overflow-x: auto; }
+  table{ width:100%; border-collapse: collapse; font-size: {{ table_font_px }}px; white-space: nowrap; }
+  th, td{ border-bottom: 1px solid var(--border); padding: 8px 12px; text-align: right; }
+  th{ background: #fff; text-align: right; font-weight: 600; color:#475467; }
+  td:nth-child(1), th:nth-child(1), td:nth-child(2), th:nth-child(2){ text-align: left; }
+  tbody tr:hover{ background: var(--stripe); }
+  .pos{ color:#027A48; font-weight: 600; }
+  .neg{ color:#B42318; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{ title }}</h1>
+  <div class="meta">{{ report_date }} | yfinance & Nasdaq Data Link 联合生成</div>
+  {% for b in blocks %}
+    <div class="card">
+      <h2>{{ b.title }}</h2>
+      <div class="table-wrap">{{ b.html_table | safe }}</div>
+    </div>
+  {% endfor %}
+</div>
+</body>
+</html>
+"""
+
 def main():
     os.makedirs(REPORT_DIR, exist_ok=True)
-    config_path = os.path.join(PROJECT_DIR, "config.json")
-    cfg = json.load(open(config_path, "r", encoding="utf-8")) if os.path.exists(config_path) else DEFAULT_CONFIG
+    cfg = DEFAULT_CONFIG
     
     watchlist_path = os.path.join(PROJECT_DIR, "watchlist.csv")
     ensure_default_watchlist_csv(watchlist_path)
     wl = load_watchlist_from_csv(watchlist_path)
     
     all_items = []
-    for items in wl.values():
-        all_items.extend(items)
+    for items in wl.values(): all_items.extend(items)
     
     dt = datetime.now(tz=LOCAL_TZ)
     report_date = dt.strftime("%Y-%m-%d")
-    
     blocks = []
+    
+    # 模块 1: 微观个股今日操作
     action_block = get_today_action_block(["QQQ", "TQQQ"])
     if action_block: blocks.append(action_block)
 
-    # 🟢 核心重构：不仅分类，更是彻底定制每一类的列名！
-    # 外围市场直接砍掉繁琐的均线和策略状态，只保留 日/月/年涨幅
+    # 模块 2: 宏观泡沫与流动性预警 (Nasdaq API 驱动)
+    macro_block = fetch_macro_and_bubble_indicators(NASDAQ_API_KEY)
+    if macro_block: blocks.append(macro_block)
+
+    # 模块 3: 全球资产巡视面板
     sections = [
-        ("🎯 核心主要标的 (大仓位)", 
-         lambda it: it["ticker"] in ["QQQ", "TQQQ"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "StrategyHint", "DailyAction", "Trend"]),
+        ("🎯 核心资产 (大仓位)", 
+         lambda it: it["ticker"] in ["QQQ", "TQQQ", "SGOV"], 
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "StrategyHint", "DailyAction"]),
          
-        ("🇺🇸 美国宏观指标 (大盘 & 风险)", 
-         lambda it: it["category"] in ["indices", "risk"] and it["market"] == "US" and it["ticker"] not in ["QQQ", "TQQQ"], 
+        ("🇺🇸 美国宏观大盘 & 风险锚", 
+         lambda it: it["category"] in ["indices", "risk"] and it["market"] == "US" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
          ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA50", "MA200"]),
          
         ("🌏 亚洲市场横向对比", 
@@ -355,8 +429,8 @@ def main():
          lambda it: it["category"] == "indices" and it["market"] in ["EU", "UK", "EUROPE", "GL", "OT"], 
          ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D"]),
          
-        ("📊 行业情况 (ETF)", 
-         lambda it: it["category"] == "sectors" and it["ticker"] not in ["QQQ", "TQQQ"], 
+        ("📊 行业与主题 ETF", 
+         lambda it: it["category"] == "sectors" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
          ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "VolRatio"]),
          
         ("🏢 重点个股跟踪", 
@@ -372,24 +446,22 @@ def main():
         df = add_trend_flags(df)
         if df.empty: continue
         
-        # 裁剪列，排序
         final_cols = [c for c in cols if c in df.columns]
         df_show = df[final_cols].copy()
         if "ChangePct" in df_show.columns: df_show = df_show.sort_values("ChangePct", ascending=False)
         
-        # 将英文列名翻译为中文显示
         df_show = df_show.rename(columns={c: CN_COL_MAP.get(c, c) for c in df_show.columns})
         html_table = df_to_html_table(df_show)
         if html_table: blocks.append({"title": title, "html_table": html_table})
 
     env = Environment(loader=BaseLoader())
     html_content = env.from_string(HTML_TEMPLATE).render(
-        title=cfg.get("title", "每日投资日报"), report_date=report_date, blocks=blocks,
+        title=cfg.get("title", "每日投资监控雷达"), report_date=report_date, blocks=blocks,
         base_font_px=cfg.get("base_font_px", 14), table_font_px=cfg.get("table_font_px", 12)
     )
 
     with open(os.path.join(REPORT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("✅ 网页版日报生成完毕 (public/index.html)！")
+    print("✅ 终极网页版日报生成完毕 (public/index.html)！")
 
 if __name__ == "__main__": main()
