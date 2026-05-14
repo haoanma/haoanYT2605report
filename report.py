@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-投资监控雷达 - 极致聚焦版
+投资监控雷达 - 极致聚焦版 (修复版)
+- 修复了雅虎财经批量下载数据格式错位导致的模块丢失问题
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
-- QQQ 前十大权重股已内置中文名称映射，并附带估值透视
 """
 
 import os
@@ -117,11 +117,11 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400) -> pd.DataFra
     tickers = list(ticker_map.keys())
     fetch_list = list(set(tickers + ["^VIX"]))
     
-    # 增加自动重试机制，防止网络抖动导致的空数据
     raw_data = None
     for attempt in range(3):
         try:
-            raw_data = yf.download(fetch_list, period=f"{history_days}d", interval="1d", auto_adjust=False, threads=False, progress=False)
+            # 🐞 核心修复：补回了 group_by="ticker" 参数，否则下方解析会全部跳过！
+            raw_data = yf.download(fetch_list, period=f"{history_days}d", interval="1d", auto_adjust=False, group_by="ticker", threads=False, progress=False)
             if raw_data is not None and not raw_data.empty: break
             time.sleep(2)
         except: time.sleep(2)
@@ -332,7 +332,7 @@ def main():
     action_block = get_today_action_block(["QQQ", "TQQQ"])
     if action_block: blocks.append(action_block)
 
-    # 模块架构定义 (按你的需求重组)
+    # 模块架构定义
     sections = [
         ("🎯 核心资产状态", 
          lambda it: it["ticker"] in ["QQQ", "TQQQ", "SGOV"], 
@@ -342,9 +342,9 @@ def main():
          lambda it: it["category"] in ["indices", "risk"] and it["market"] == "US" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
          ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200"], "us_macro"),
 
-        # 🚀 新增: QQQ 前十大权重股估值透视模块
+        # 🚀 QQQ 前十大权重股估值透视模块
         ("🚀 QQQ 权重前十大股票 (估值透视)", 
-         None, # 专门的逻辑处理
+         None, 
          ["Name", "Ticker", "Close", "ChangePct", "PS", "PE_Trailing", "PE_Forward", "Ret20D", "Ret250D", "MA200"], "qqq_top"),
          
         ("🌏 亚洲市场横向对比", 
@@ -366,7 +366,6 @@ def main():
     ]
 
     for title, condition, cols, key in sections:
-        
         if key == "qqq_top":
             # 专门拉取前十大的数据
             df = fetch_and_calculate(QQQ_TOP_10_MAP, cfg.get("history_days", 400))
@@ -384,7 +383,6 @@ def main():
                 df.loc[df["Ticker"] == t, "PE_Forward"] = vals["PE_Forward"]
                 
         else:
-            # 常规模块处理
             items = [it for it in all_items if condition(it)]
             if not items: continue
             df = fetch_and_calculate({it["ticker"]: it["name"] for it in items}, cfg.get("history_days", 400))
@@ -398,7 +396,7 @@ def main():
         # 将日涨幅排在前面
         if "ChangePct" in df_show.columns: df_show = df_show.sort_values("ChangePct", ascending=False)
         
-        # 如果是前十大，按市值权重（这里约等于 P/S 或绝对股价，这里我们强制按自定义的顺序排列以保证霸主在前）
+        # 如果是前十大，按固定顺序排列
         if key == "qqq_top":
             sorter = list(QQQ_TOP_10_MAP.keys())
             df_show['Ticker'] = pd.Categorical(df_show['Ticker'], categories=sorter, ordered=True)
