@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-投资监控雷达 - 极致聚焦版 (状态机大脑版)
+投资监控雷达 - 极致聚焦版 (状态机大脑 + MA20/MA200全景透视版)
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
-- 核心引擎更新：融合 3把尖刀(买入) + 2面盾牌(卖出) + 边缘触发 + 绝对防守法则
-- 极端参数阈值：VIX > 34 (左侧飞刀) / Bias > 64% (极值止盈)
+- 核心引擎：融合 3把尖刀(买入) + 2面盾牌(卖出) + 边缘触发 + 绝对防守法则
+- 视觉优化：全面透出 MA20 均线，方便直观校验短线触发位置
 """
 
 import os
@@ -36,7 +36,7 @@ CN_COL_MAP = {
     "Name": "名称", "Ticker": "代码", "Close": "收盘价", 
     "ChangePct": "日涨幅(%)", "Ret5D": "周涨幅(%)", 
     "Ret20D": "月涨幅(%)", "Ret250D": "年涨幅(%)",
-    "VolRatio": "量比", "MA200": "MA200", "Trend": "趋势",
+    "VolRatio": "量比", "MA20": "MA20", "MA200": "MA200", "Trend": "趋势",
     "StrategyHint": "策略状态", "DailyAction": "今日操作",
     "PE_Trailing": "历史P/E", "PE_Forward": "远期P/E", "PS": "市销率(P/S)",
 }
@@ -150,6 +150,10 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400) -> pd.DataFra
             curr_vix = _safe_float(vix_aligned.iloc[-1]) if len(vix_aligned) >= 1 else np.nan
             prev_vix = _safe_float(vix_aligned.iloc[-2]) if len(vix_aligned) >= 2 else np.nan
 
+            # 🟢 增加 MA20 的计算
+            ma20_series = close.rolling(20).mean()
+            curr_ma20 = _safe_float(ma20_series.iloc[-1]) if len(close) >= 20 else np.nan
+            
             ma200_series = close.rolling(200).mean()
             curr_ma200 = _safe_float(ma200_series.iloc[-1]) if len(close) >= 200 else np.nan
             prev_ma200 = _safe_float(ma200_series.iloc[-2]) if len(close) >= 201 else np.nan
@@ -189,10 +193,11 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 400) -> pd.DataFra
                 v_avg = df_t["Volume"].iloc[-21:-1].mean()
                 if v_avg and v_avg > 0: vol_ratio = _safe_float(df_t["Volume"].iloc[-1]) / v_avg
 
+            # 🟢 在字典中暴露出 MA20
             rows.append({
                 "Name": ticker_map.get(t, t), "Ticker": t, "Close": curr, "ChangePct": pct,
                 "VolRatio": vol_ratio, "StrategyHint": strategy_hint, "DailyAction": daily_action,
-                "MA200": curr_ma200, "Ret20D": ret20, "Ret250D": ret250
+                "MA20": curr_ma20, "MA200": curr_ma200, "Ret20D": ret20, "Ret250D": ret250
             })
         except: continue
     return pd.DataFrame(rows)
@@ -247,9 +252,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             prev_vix_recession = prev["vix"] > 22
             
             # 3. 判定卖出防守盾牌 (Sell Absolute Priority)
-            # 盾1: 跌破年线且 VIX > 22 (边缘触发：只要其中一项刚刚达成，且同时满足另一项)
             is_sell_shield1 = (curr["close"] < curr["ma200"] and vix_recession) and not (prev["close"] < prev["ma200"] and prev_vix_recession)
-            # 盾2: 泡沫极度偏离且跌破 20 日线 (狂热刺破)
             is_sell_shield2 = (bias_pct > bubble_threshold) and cross_down_ma20
 
             # 4. 判定买入进攻尖刀
@@ -257,7 +260,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             is_buy_knife2 = (curr["close"] <= curr["ma200"]) and vix_spike_panic
             is_buy_knife3 = cross_up_ma20 and (curr["close"] > curr["ma200"])
 
-            # 5. 状态机风控大脑介入 (强行拦截优先级)
+            # 5. 状态机风控大脑介入
             if is_sell_shield1 or is_sell_shield2:
                 if is_sell_shield1:
                     signal, color = "🚨 盾1：清仓避险", "#B42318"
@@ -278,7 +281,6 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                     desc = "<b>假摔纠错！</b>重返 MA20 日线，顺大势吃大肉"
                     
             else:
-                # 若无边缘触发信号，维持原有状态
                 if curr["close"] > curr["ma200"]:
                     signal, color = "🛡️ 多头死拿", "#B8860B"
                     desc = f"均线之上耐心持仓 (当前 Bias: {bias_pct:.1f}%)"
@@ -312,13 +314,13 @@ def df_to_html_table(df: pd.DataFrame) -> str:
     for col in ["日涨幅(%)", "周涨幅(%)", "月涨幅(%)", "年涨幅(%)"]:
         if col in df2.columns: df2[col] = df2[col].apply(fmt_pct)
         
-    # 市销率 > 20 倍标红报警
     if "市销率(P/S)" in df2.columns:
         df2["市销率(P/S)"] = df2["市销率(P/S)"].apply(
             lambda x: f'<span class="neg" style="font-weight:bold;">{x:.1f}x</span>' if (not pd.isna(x) and x > 20) else (f"{x:.1f}x" if not pd.isna(x) else "-")
         )
 
-    for c in ["收盘价", "量比", "MA200", "历史P/E", "远期P/E"]:
+    # 🟢 渲染格式里加入 MA20
+    for c in ["收盘价", "量比", "MA20", "MA200", "历史P/E", "远期P/E"]:
         if c in df2.columns: 
             df2[c] = df2[c].apply(lambda x: f"{x:.2f}x" if "P/E" in c and not pd.isna(x) else (f"{x:.2f}" if not pd.isna(x) else "-"))
 
@@ -397,20 +399,19 @@ def main():
     action_block = get_today_action_block(["QQQ", "TQQQ"])
     if action_block: blocks.append(action_block)
 
-    # 模块架构定义
+    # 🟢 模块架构定义 (将 MA20 加入到需要的栏目中)
     sections = [
         ("🎯 核心资产状态", 
          lambda it: it["ticker"] in ["QQQ", "TQQQ", "SGOV"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "StrategyHint", "Trend"], "core"),
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA200", "StrategyHint", "Trend"], "core"),
          
         ("🇺🇸 美国宏观大盘 & 风险锚", 
          lambda it: it["category"] in ["indices", "risk"] and it["market"] == "US" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200"], "us_macro"),
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA200"], "us_macro"),
 
-        # 🚀 QQQ 前十大权重股估值透视模块
         ("🚀 QQQ 权重前十大股票 (估值透视)", 
          None, 
-         ["Name", "Ticker", "Close", "ChangePct", "PS", "PE_Trailing", "PE_Forward", "Ret20D", "Ret250D", "MA200"], "qqq_top"),
+         ["Name", "Ticker", "Close", "ChangePct", "PS", "PE_Trailing", "PE_Forward", "MA20", "MA200", "Ret250D"], "qqq_top"),
          
         ("🌏 亚洲市场横向对比", 
          lambda it: it["category"] == "indices" and it["market"] in ["HK", "CN", "JP", "IN", "ASIA"], 
@@ -422,21 +423,18 @@ def main():
          
         ("📊 行业与主题 ETF", 
          lambda it: it["category"] == "sectors" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "VolRatio"], "sectors"),
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA200", "VolRatio"], "sectors"),
          
-        # 🏢 自动排重：剔除已经在前十大里出现过的股票
         ("🏢 其他重点个股", 
          lambda it: it["category"] == "stocks" and it["ticker"] not in QQQ_TOP_10_MAP, 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200", "VolRatio"], "stocks")
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA20", "MA200", "VolRatio"], "stocks")
     ]
 
     for title, condition, cols, key in sections:
         if key == "qqq_top":
-            # 专门拉取前十大的数据
             df = fetch_and_calculate(QQQ_TOP_10_MAP, cfg.get("history_days", 400))
             if df.empty: continue
             
-            # 抓取 P/E 和 P/S
             val_data = fetch_valuation_data(list(QQQ_TOP_10_MAP.keys()))
             df["PS"] = np.nan
             df["PE_Trailing"] = np.nan
@@ -458,10 +456,8 @@ def main():
         final_cols = [c for c in cols if c in df.columns]
         df_show = df[final_cols].copy()
         
-        # 将日涨幅排在前面
         if "ChangePct" in df_show.columns: df_show = df_show.sort_values("ChangePct", ascending=False)
         
-        # 如果是前十大，按固定顺序排列
         if key == "qqq_top":
             sorter = list(QQQ_TOP_10_MAP.keys())
             df_show['Ticker'] = pd.Categorical(df_show['Ticker'], categories=sorter, ordered=True)
