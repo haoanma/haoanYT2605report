@@ -3,7 +3,9 @@
 
 """
 投资监控雷达 - 极致聚焦版 (Model 10: Prometheus 驱动)
-- 核心引擎更新：VIX 平静重入 (MA50) + 动态偏离度阈值 (Dynamic Bias)
+- 信号引擎：
+    买入：MA200突破 / VIX恐慌抄底(>34) / MA20防踏空接回 / VIX平息再入场(5日消退) / MA50夺回
+    卖出：MA200+VIX22 清仓避险 / 动态Bias止盈(rolling 252日85th分位)
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
 """
 
@@ -171,25 +173,50 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                 elif t in ["SGOV", "SHV", "BIL"]:
                     strategy_hint, daily_action = "💰 空仓收息", "稳定收息"
                 else:
-                    # Model 10 信号判定
-                    sell_normal = (curr < curr_ma200) and (curr_vix > 22.0)
-                    sell_profit = is_overextended and (curr < curr_ma20)
-                    
-                    buy_ma200 = (curr > curr_ma200) and (prev <= prev_ma200)
+                    # --- Model 10 Prometheus 信号判定 ---
+                    # 辅助数据：5日前快照
+                    vix_5d_ago   = _safe_float(vix_aligned.iloc[-6]) if len(vix_aligned) >= 6 else np.nan
+                    close_5d_ago = _safe_float(close.iloc[-6])        if len(close) >= 6    else np.nan
+                    prev_ma200_val = _safe_float(ma200.iloc[-2])
+                    prev_ma20_val  = _safe_float(ma20.iloc[-2])
+                    prev_ma50_val  = _safe_float(ma50.iloc[-2])
+                    prev_vix       = _safe_float(vix_aligned.iloc[-2]) if len(vix_aligned) >= 2 else np.nan
+                    prev_close     = _safe_float(close.iloc[-2])
+
+                    ma200_rising      = (curr_ma200 > _safe_float(ma200.iloc[-6])) if len(ma200) >= 6 else False
+                    recent_min        = float(close.iloc[-6:-1].min()) if len(close) >= 6 else curr
+                    recently_dipped   = recent_min < curr_ma50
+
+                    # 卖出
+                    sell_normal  = (curr < curr_ma200) and (curr_vix > 22.0) and not ((prev_close < prev_ma200_val) and (prev_vix > 22.0))
+                    p_overext    = (_safe_float(bias.iloc[-2]) > _safe_float(dynamic_threshold.iloc[-2]))
+                    sell_profit  = is_overextended and (curr < curr_ma20) and not (p_overext and (prev_close < prev_ma20_val))
+
+                    # 买入
+                    buy_ma200    = (prev_close <= prev_ma200_val) and (curr > curr_ma200)
                     buy_vix_panic = (curr <= curr_ma200) and (curr_vix > 34.0) and (prev_vix <= 34.0)
-                    buy_vix_calm = (curr > curr_ma50) and (curr_vix < 20.0) and (prev_vix >= 20.0)
+                    buy_reentry  = (prev_close <= prev_ma20_val) and (curr > curr_ma20) and (curr > curr_ma200)
+                    vix_calming  = (not np.isnan(vix_5d_ago)) and (vix_5d_ago > 30.0) and (curr_vix < 25.0)
+                    price_stable = (not np.isnan(close_5d_ago)) and (curr > close_5d_ago)
+                    p_vix_calm   = (not np.isnan(vix_5d_ago)) and (vix_5d_ago > 30.0) and (prev_vix < 25.0) and (prev_close > close_5d_ago)
+                    buy_vix_calm = vix_calming and price_stable and (curr > curr_ma50) and not p_vix_calm
+                    buy_ma50     = (prev_close <= prev_ma50_val) and (curr > curr_ma50) and ma200_rising and recently_dipped and (curr > curr_ma200)
 
                     is_sell_state = sell_normal or sell_profit
-                    is_buy_state = (curr > curr_ma200) or (curr_vix > 34.0)
+                    is_buy_state  = (curr > curr_ma200) or (curr_vix > 34.0)
 
                     if is_sell_state:
                         strategy_hint, daily_action = ("🚨 极值止盈" if sell_profit else "🚨 跌破防线(VIX高企)"), "卖出"
                     elif buy_vix_panic:
                         strategy_hint, daily_action = "🔥 VIX极度恐慌抄底", "买入"
                     elif buy_vix_calm:
-                        strategy_hint, daily_action = "🕊️ 平静企稳重入(MA50)", "买入"
+                        strategy_hint, daily_action = "🕊️ VIX平息重入(5日消退)", "买入"
                     elif buy_ma200:
                         strategy_hint, daily_action = "🚀 突破MA200长牛起航", "买入"
+                    elif buy_ma50:
+                        strategy_hint, daily_action = "📈 MA50夺回(回调结束)", "买入"
+                    elif buy_reentry:
+                        strategy_hint, daily_action = "↩️ MA20接回(防踏空)", "买入"
                     elif is_buy_state:
                         strategy_hint = "均线之上 (持仓)"
                     else:
@@ -255,31 +282,57 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             curr_dyn_thresh = dynamic_threshold.iloc[-1]
             is_overextended = curr_bias > curr_dyn_thresh
 
+            # --- 辅助数据：5日前快照（用于 VIX 平息 & MA50 夺回信号）---
+            row_5d = df.iloc[-6] if len(df) >= 6 else None
+            vix_5d_ago   = row_5d["vix"]   if row_5d is not None else np.nan
+            close_5d_ago = row_5d["close"] if row_5d is not None else np.nan
+            ma200_5d_ago = row_5d["ma200"] if row_5d is not None else np.nan
+
+            # MA200 斜率向上（5日对比）
+            ma200_rising = curr["ma200"] > ma200_5d_ago if not np.isnan(ma200_5d_ago) else False
+
+            # 5日内最低收盘是否曾低于 MA50（确认"确实发生过回调"）
+            recent_min = df["close"].iloc[-6:-1].min() if len(df) >= 6 else curr["close"]
+            recently_dipped_ma50 = recent_min < curr["ma50"]
+
             # 边缘触发器 (Edge Triggers)
-            cross_down_ma200 = (prev["close"] >= prev["ma200"]) and (curr["close"] < curr["ma200"])
             cross_up_ma200 = (prev["close"] <= prev["ma200"]) and (curr["close"] > curr["ma200"])
+            cross_up_ma20  = (prev["close"] <= prev["ma20"])  and (curr["close"] > curr["ma20"])
+            cross_up_ma50  = (prev["close"] <= prev["ma50"])  and (curr["close"] > curr["ma50"])
             cross_down_ma20 = (prev["close"] >= prev["ma20"]) and (curr["close"] < curr["ma20"])
-            
+
             # --- 卖出逻辑 (Sell Absolute Priority) ---
             # 盾1: 正常避险 (跌破年线 且 VIX > 22)
             c_sell_normal = (curr["close"] < curr["ma200"]) and (curr["vix"] > 22.0)
             p_sell_normal = (prev["close"] < prev["ma200"]) and (prev["vix"] > 22.0)
             sell_normal = c_sell_normal and not p_sell_normal
-            
+
             # 盾2: 动态止盈 (处于超买期，且跌破 20日线)
             c_sell_profit = is_overextended and (curr["close"] < curr["ma20"])
             p_sell_profit = (bias.iloc[-2] > dynamic_threshold.iloc[-2]) and (prev["close"] < prev["ma20"])
             sell_profit = c_sell_profit and not p_sell_profit
 
             # --- 买入逻辑 ---
-            # 刀1: MA200 收复
+            # 刀1: MA200 收复（趋势右侧买）
             buy_ma200 = cross_up_ma200
-            # 刀2: 左侧恐慌飞刀 (VIX > 34)
-            buy_vix_panic = (curr["close"] <= curr["ma200"]) and (curr["vix"] > 34.0) and (prev["vix"] <= 34.0)
-            # 刀3: VIX 平静重入 (VIX < 20 且企稳 MA50)
-            buy_vix_calm = (curr["close"] > curr["ma50"]) and (curr["vix"] < 20.0) and (prev["vix"] >= 20.0)
 
-            # 状态判定
+            # 刀2: 左侧恐慌飞刀 (VIX 每次重新突破 34)
+            buy_vix_panic = (curr["close"] <= curr["ma200"]) and (curr["vix"] > 34.0) and (prev["vix"] <= 34.0)
+
+            # 刀3: MA20 防踏空接回（止盈后价格重新站上 MA20，仍在 MA200 之上）
+            buy_reentry = cross_up_ma20 and (curr["close"] > curr["ma200"])
+
+            # 刀4: VIX 平息再入场（5日前 VIX>30，现在<25，且价格企稳回升）
+            #   比原版"VIX<20"更敏感，能在极端恐慌消退时提前介入
+            vix_calming    = (not np.isnan(vix_5d_ago)) and (vix_5d_ago > 30.0) and (curr["vix"] < 25.0)
+            price_stable   = (not np.isnan(close_5d_ago)) and (curr["close"] > close_5d_ago)
+            p_vix_calming  = (not np.isnan(vix_5d_ago)) and (vix_5d_ago > 30.0) and (prev["vix"] < 25.0) and (prev["close"] > close_5d_ago)
+            buy_vix_calm   = vix_calming and price_stable and (curr["close"] > curr["ma50"]) and not p_vix_calming
+
+            # 刀5: MA50 夺回买入（牛市回调后重新站上 MA50，MA200 仍向上）
+            buy_ma50 = cross_up_ma50 and ma200_rising and recently_dipped_ma50 and (curr["close"] > curr["ma200"])
+
+            # 状态判定（卖出优先；买入按信号强度排列）
             if sell_normal or sell_profit:
                 if sell_normal:
                     signal, color = "🚨 盾1：清仓避险", "#B42318"
@@ -287,17 +340,23 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                 else:
                     signal, color = "🚨 盾2：动态止盈", "#B42318"
                     desc = f"<b>高位超买！</b>偏离度({curr_bias*100:.1f}%) 突破动态阈值({curr_dyn_thresh*100:.1f}%) 且跌穿 MA20"
-                    
-            elif buy_ma200 or buy_vix_panic or buy_vix_calm:
+
+            elif buy_vix_panic or buy_vix_calm or buy_ma200 or buy_ma50 or buy_reentry:
                 if buy_vix_panic:
                     signal, color = "🔥 刀2：左侧抄底", "#027A48"
                     desc = f"<b>极度恐慌！</b>迎着暴跌 (VIX {curr['vix']:.1f}) 抢夺带血筹码"
                 elif buy_vix_calm:
-                    signal, color = "🕊️ 刀3：平静重入", "#027A48"
-                    desc = f"<b>踏空纠错！</b>市场恐慌消退 (VIX<20) 且企稳 MA50"
-                else:
+                    signal, color = "🕊️ 刀4：VIX平息重入", "#027A48"
+                    desc = f"<b>恐慌消退！</b>VIX 从高位({vix_5d_ago:.1f})回落至 {curr['vix']:.1f}，价格企稳 MA50，提前介入"
+                elif buy_ma200:
                     signal, color = "🚀 刀1：右侧顺势", "#027A48"
                     desc = "<b>长牛起航！</b>向上有效突破 MA200 牛熊分界线"
+                elif buy_ma50:
+                    signal, color = "📈 刀5：MA50夺回", "#027A48"
+                    desc = f"<b>回调结束！</b>牛市健康回调后重新站上 MA50，MA200 趋势向上"
+                else:
+                    signal, color = "↩️ 刀3：MA20接回", "#027A48"
+                    desc = "<b>防踏空！</b>止盈后价格重新站上 MA20，续仓跟牛"
                     
             else:
                 if curr["close"] > curr["ma200"]:
