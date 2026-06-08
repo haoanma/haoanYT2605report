@@ -2,10 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-投资监控雷达 - 极致聚焦版 (Model 08: Diamond Hands 驱动)
-- 信号引擎：
-    买入：MA200突破(趋势右侧) / VIX恐慌抄底(>34, 跌破MA200时) / MA20防踏空接回
-    卖出：MA200+VIX22 清仓避险 / 固定Bias>64% + 10日窗口极值止盈
+投资监控雷达 - 极致聚焦版
+- QQQ  信号引擎：Model 08 Diamond Hands
+    买入：MA200突破 / VIX>34恐慌抄底 / MA20防踏空接回
+    卖出：MA200+VIX22 清仓 / 固定Bias>64%止盈
+- TQQQ 信号引擎：Model 08 基础 + Apollo VIX百分位体制叠加
+    额外卖出：高恐慌体制(VIX>过去1年75th百分位) 且 跌破MA50 → 提前离场
+    额外买入：低恐慌体制(VIX<25th百分位)接回用MA20；高恐慌体制接回要MA50确认
+    止盈：动态Bias阈值(252日85th百分位) 替代固定64%
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
 """
 
@@ -107,13 +111,83 @@ def _safe_float(x):
     except: return np.nan
 
 # ==========================================
-# 📊 通用大表策略判定 (Model 08: Diamond Hands)
+# 🔧 Apollo 信号计算辅助函数 (仅用于 TQQQ)
+# ==========================================
+def _compute_apollo_signals(close: pd.Series, vix: pd.Series, ma20: pd.Series,
+                             ma50: pd.Series, ma200: pd.Series):
+    """返回 Apollo 模型在序列末端的当前信号字典。"""
+    bias        = (close / ma200) - 1.0
+    bias_th     = bias.rolling(252, min_periods=63).quantile(0.85)
+    is_oe_s     = (bias > bias_th).rolling(10, min_periods=1).max().fillna(False).astype(bool)
+    peak_bias10 = bias.rolling(10, min_periods=1).max()   # 近10日Bias峰值，用于止盈描述
+
+    vix_p75  = vix.rolling(252, min_periods=63).quantile(0.75)
+    vix_p25  = vix.rolling(252, min_periods=63).quantile(0.25)
+    high_fear = vix > vix_p75
+    low_fear  = vix < vix_p25
+
+    def edge(cond):
+        c = cond.fillna(False).astype(bool)
+        return c & (~c.shift(1, fill_value=False))
+
+    # 买入
+    bt  = edge(close > ma200)
+    bv  = edge((vix > 34.0) & (close <= ma200))
+    brc = edge((close > ma20)  & (close > ma200) & low_fear)   # 低恐慌: MA20
+    brf = edge((close > ma50)  & (close > ma200) & (~low_fear)) # 非低恐慌: MA50
+
+    # 卖出
+    sff = edge(high_fear & (close < ma50))                     # Apollo新增: 高恐提前出
+    sn  = edge((close < ma200) & (vix > 20.0))
+    sp  = edge(is_oe_s & (close < ma20))
+
+    raw_buy  = bt | bv | brc | brf
+    raw_sell = sff | sn | sp
+    _st = pd.Series(np.nan, index=close.index)
+    _st.loc[raw_buy & (~raw_sell)] = 1.0
+    _st.loc[raw_sell]              = 0.0
+    is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
+
+    curr_vix      = float(vix.iloc[-1])
+    curr_p75      = float(vix_p75.iloc[-1]) if not np.isnan(vix_p75.iloc[-1]) else 30.0
+    curr_p25      = float(vix_p25.iloc[-1]) if not np.isnan(vix_p25.iloc[-1]) else 15.0
+    curr_bias     = float(bias.iloc[-1])
+    curr_bth      = float(bias_th.iloc[-1]) if not np.isnan(bias_th.iloc[-1]) else 0.85
+    curr_peak_b10 = float(peak_bias10.iloc[-1])
+
+    regime = ("高恐慌" if bool(high_fear.iloc[-1]) else
+              ("低恐慌" if bool(low_fear.iloc[-1]) else "正常"))
+
+    return {
+        "is_buy_state":       is_buy_state,
+        "sell_fear_fast":     bool(sff.iloc[-1]),
+        "sell_normal":        bool(sn.iloc[-1]),
+        "sell_profit":        bool(sp.iloc[-1]),
+        "buy_trend":          bool(bt.iloc[-1]),
+        "buy_vix_panic":      bool(bv.iloc[-1]),
+        "buy_reentry_calm":   bool(brc.iloc[-1]),
+        "buy_reentry_fear":   bool(brf.iloc[-1]),
+        "is_overextended":    bool(is_oe_s.iloc[-1]),
+        "curr_bias":          curr_bias,
+        "curr_bias_th":       curr_bth,
+        "curr_peak_bias10":   curr_peak_b10,
+        "curr_vix":           curr_vix,
+        "vix_p75":            curr_p75,
+        "vix_p25":            curr_p25,
+        "regime":             regime,
+    }
+
+
+# ==========================================
+# 📊 通用大表策略判定
+#    QQQ 及其他: Model 08 Diamond Hands
+#    TQQQ:       Model 08 基础 + Apollo 叠加
 # ==========================================
 def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFrame:
     if not ticker_map: return pd.DataFrame()
     tickers = list(ticker_map.keys())
     fetch_list = list(set(tickers + ["^VIX"]))
-    
+
     raw_data = None
     for attempt in range(3):
         try:
@@ -121,9 +195,9 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
             if raw_data is not None and not raw_data.empty: break
             time.sleep(2)
         except: time.sleep(2)
-            
+
     if raw_data is None or raw_data.empty: return pd.DataFrame()
-    
+
     if "^VIX" in raw_data.columns.levels[0]: vix_df = raw_data["^VIX"]["Close"].dropna().sort_index()
     else: vix_df = pd.Series(dtype=float)
 
@@ -143,60 +217,91 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
             curr = _safe_float(close.iloc[-1])
             prev = _safe_float(close.iloc[-2])
             pct = (curr / prev - 1) * 100 if prev else np.nan
-            
+
             curr_vix = _safe_float(vix_aligned.iloc[-1]) if len(vix_aligned) >= 1 else np.nan
-            prev_vix = _safe_float(vix_aligned.iloc[-2]) if len(vix_aligned) >= 2 else np.nan
 
-            ma20 = close.rolling(20).mean()
-            ma50 = close.rolling(50).mean()
+            ma20  = close.rolling(20).mean()
+            ma50  = close.rolling(50).mean()
             ma200 = close.rolling(200).mean()
-            
-            curr_ma20 = _safe_float(ma20.iloc[-1])
-            curr_ma50 = _safe_float(ma50.iloc[-1])
+
+            curr_ma20  = _safe_float(ma20.iloc[-1])
+            curr_ma50  = _safe_float(ma50.iloc[-1])
             curr_ma200 = _safe_float(ma200.iloc[-1])
-            prev_ma200 = _safe_float(ma200.iloc[-2])
-
-            # Model 08 Diamond: 固定 Bias>64%, 10日窗口判定超买
-            bias = (close / ma200) - 1.0
-            is_oe_s = (bias > 0.64).rolling(10, min_periods=1).max().astype(bool)
-            curr_bias = _safe_float(bias.iloc[-1])
-            is_overextended = bool(is_oe_s.iloc[-1])
-
-            # 全历史状态机 → 派生 is_buy_state（与 model_08_diamond.add_signals 同构）
-            _c_bt  = close > ma200
-            _bt    = _c_bt & (~_c_bt.shift(1).fillna(False))
-            _c_bv  = (vix_aligned > 34.0) & (close <= ma200)
-            _bv    = _c_bv & (~_c_bv.shift(1).fillna(False))
-            _c_br  = (close > ma20) & (close > ma200)
-            _br    = _c_br & (~_c_br.shift(1).fillna(False))
-            _c_sn  = (close < ma200) & (vix_aligned > 22.0)
-            _sn    = _c_sn & (~_c_sn.shift(1).fillna(False))
-            _c_sp  = is_oe_s & (close < ma20)
-            _sp    = _c_sp & (~_c_sp.shift(1).fillna(False))
-            _raw_buy  = _bt | _bv | _br
-            _raw_sell = _sn | _sp
-            _st = pd.Series(np.nan, index=close.index)
-            _st.loc[_raw_buy & (~_raw_sell)] = 1.0
-            _st.loc[_raw_sell]               = 0.0
-            is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
-
-            # 今日边缘信号（从序列末端读取）
-            sell_normal   = bool(_sn.iloc[-1])
-            sell_profit   = bool(_sp.iloc[-1])
-            buy_ma200     = bool(_bt.iloc[-1])
-            buy_vix_panic = bool(_bv.iloc[-1])
-            buy_reentry   = bool(_br.iloc[-1])
 
             strategy_hint, daily_action = "", "观望"
+
             if not np.isnan(prev) and not np.isnan(curr_ma200):
                 if t == "^VIX":
                     if curr > 34: strategy_hint, daily_action = "🔴 极度恐慌 (抄底)", "买点出现"
                     elif curr > 22: strategy_hint, daily_action = "🟠 高压警戒 (破均线卖出)", "警戒区域"
                     else: strategy_hint, daily_action = "🟢 情绪平稳", "安全期"
+
                 elif t in ["SGOV", "SHV", "BIL"]:
                     strategy_hint, daily_action = "💰 空仓收息", "稳定收息"
+
+                elif t == "TQQQ":
+                    # ── Apollo 信号 ──
+                    ap = _compute_apollo_signals(close, vix_aligned, ma20, ma50, ma200)
+                    regime_tag = {"高恐慌": "🔴", "低恐慌": "🟢", "正常": "🟡"}.get(ap["regime"], "🟡")
+                    regime_str = f"{regime_tag}{ap['regime']}体制 VIX={ap['curr_vix']:.1f}(p75={ap['vix_p75']:.1f})"
+
+                    if ap["sell_fear_fast"]:
+                        strategy_hint = f"⚡ Apollo高恐预警卖出 | {regime_str}"
+                        daily_action  = "卖出"
+                    elif ap["sell_profit"]:
+                        strategy_hint = f"🚨 动态止盈(Bias>{ap['curr_bias_th']*100:.0f}%) | {regime_str}"
+                        daily_action  = "卖出"
+                    elif ap["sell_normal"]:
+                        strategy_hint = f"🚨 跌破MA200+VIX高企 | {regime_str}"
+                        daily_action  = "卖出"
+                    elif ap["buy_vix_panic"]:
+                        strategy_hint = f"🔥 VIX极度恐慌抄底 | {regime_str}"
+                        daily_action  = "买入"
+                    elif ap["buy_trend"]:
+                        strategy_hint = f"🚀 突破MA200右侧 | {regime_str}"
+                        daily_action  = "买入"
+                    elif ap["buy_reentry_calm"]:
+                        strategy_hint = f"↩️ 低恐接回(MA20) | {regime_str}"
+                        daily_action  = "买入"
+                    elif ap["buy_reentry_fear"]:
+                        strategy_hint = f"↩️ 压力期接回(MA50) | {regime_str}"
+                        daily_action  = "买入"
+                    elif ap["is_buy_state"]:
+                        bias_warn = f" ⚠️Bias={ap['curr_bias']*100:.0f}%>阈值{ap['curr_bias_th']*100:.0f}%" if ap["is_overextended"] else f" Bias={ap['curr_bias']*100:.0f}%"
+                        strategy_hint = f"持仓中{bias_warn} | {regime_str}"
+                    else:
+                        strategy_hint = f"空仓等信号 | {regime_str}"
+
                 else:
-                    # --- Model 08 Diamond Hands 信号判定 ---
+                    # ── Model 08 Diamond Hands (其他品种) ──
+                    bias    = (close / ma200) - 1.0
+                    is_oe_s = (bias > 0.64).rolling(10, min_periods=1).max().astype(bool)
+                    curr_bias      = _safe_float(bias.iloc[-1])
+                    is_overextended = bool(is_oe_s.iloc[-1])
+
+                    _c_bt = close > ma200
+                    _bt   = _c_bt & (~_c_bt.shift(1).fillna(False))
+                    _c_bv = (vix_aligned > 34.0) & (close <= ma200)
+                    _bv   = _c_bv & (~_c_bv.shift(1).fillna(False))
+                    _c_br = (close > ma20) & (close > ma200)
+                    _br   = _c_br & (~_c_br.shift(1).fillna(False))
+                    _c_sn = (close < ma200) & (vix_aligned > 22.0)
+                    _sn   = _c_sn & (~_c_sn.shift(1).fillna(False))
+                    _c_sp = is_oe_s & (close < ma20)
+                    _sp   = _c_sp & (~_c_sp.shift(1).fillna(False))
+                    _raw_buy  = _bt | _bv | _br
+                    _raw_sell = _sn | _sp
+                    _st = pd.Series(np.nan, index=close.index)
+                    _st.loc[_raw_buy & (~_raw_sell)] = 1.0
+                    _st.loc[_raw_sell]               = 0.0
+                    is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
+
+                    sell_normal   = bool(_sn.iloc[-1])
+                    sell_profit   = bool(_sp.iloc[-1])
+                    buy_ma200     = bool(_bt.iloc[-1])
+                    buy_vix_panic = bool(_bv.iloc[-1])
+                    buy_reentry   = bool(_br.iloc[-1])
+
                     if sell_profit or sell_normal:
                         strategy_hint, daily_action = ("🚨 极值止盈" if sell_profit else "🚨 跌破防线(VIX高企)"), "卖出"
                     elif buy_vix_panic:
@@ -210,7 +315,7 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                     else:
                         strategy_hint = f"阴跌空仓 (VIX={curr_vix:.1f})"
 
-            ret20 = (curr / close.iloc[-21] - 1) * 100 if len(close) > 21 else np.nan
+            ret20  = (curr / close.iloc[-21]  - 1) * 100 if len(close) > 21  else np.nan
             ret250 = (curr / close.iloc[-251] - 1) * 100 if len(close) > 251 else np.nan
 
             vol_ratio = np.nan
@@ -233,7 +338,7 @@ def add_trend_flags(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # ==========================================
-# 🧠 核心舱：Model 08 Diamond Hands 状态机
+# 🧠 核心舱：QQQ → Model 08 | TQQQ → Apollo
 # ==========================================
 def get_today_action_block(tickers=["QQQ", "TQQQ"]):
     try:
@@ -251,83 +356,157 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             close = df_raw[tk]["Close"].dropna()
             if len(close) < 252: continue
 
-            df = pd.DataFrame({"close": close})
-            df["ma20"] = df["close"].rolling(20).mean()
-            df["ma200"] = df["close"].rolling(200).mean()
-            df["vix"] = vix_series.reindex(df.index).ffill()
-            df = df.dropna()
-            if len(df) < 2: continue
+            vix_aligned = vix_series.reindex(close.index).ffill().dropna()
+            common_idx  = close.index.intersection(vix_aligned.index)
+            close       = close.loc[common_idx]
+            vix_aligned = vix_aligned.loc[common_idx]
+            if len(close) < 2: continue
 
-            # Model 08 Diamond: 固定 Bias>64%, 10日窗口判定超买
-            bias_s = (df["close"] / df["ma200"]) - 1.0
-            is_oe_s = (bias_s > 0.64).rolling(10, min_periods=1).max().astype(bool)
+            ma20  = close.rolling(20).mean()
+            ma50  = close.rolling(50).mean()
+            ma200 = close.rolling(200).mean()
 
-            # 全历史状态机（与 model_08_diamond.add_signals 同构）
-            _c_bt   = df["close"] > df["ma200"]
-            _bt     = _c_bt & (~_c_bt.shift(1).fillna(False))
-            _c_bv   = (df["vix"] > 34.0) & (df["close"] <= df["ma200"])
-            _bv     = _c_bv & (~_c_bv.shift(1).fillna(False))
-            _c_br   = (df["close"] > df["ma20"]) & (df["close"] > df["ma200"])
-            _br     = _c_br & (~_c_br.shift(1).fillna(False))
-            _c_sn   = (df["close"] < df["ma200"]) & (df["vix"] > 22.0)
-            _sn     = _c_sn & (~_c_sn.shift(1).fillna(False))
-            _c_sp   = is_oe_s & (df["close"] < df["ma20"])
-            _sp     = _c_sp & (~_c_sp.shift(1).fillna(False))
-            _raw_buy  = _bt | _bv | _br
-            _raw_sell = _sn | _sp
-            _st = pd.Series(np.nan, index=df.index)
-            _st.loc[_raw_buy & (~_raw_sell)] = 1.0
-            _st.loc[_raw_sell]               = 0.0
-            is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
+            if tk == "TQQQ":
+                # ══ Apollo 信号 ══════════════════════════════════════
+                ap = _compute_apollo_signals(close, vix_aligned, ma20, ma50, ma200)
 
-            curr = df.iloc[-1]
-            prev = df.iloc[-2]
-            curr_bias     = float(bias_s.iloc[-1])
-            is_overextended = bool(is_oe_s.iloc[-1])
+                regime_color = {"高恐慌": "#B42318", "低恐慌": "#027A48", "正常": "#B8860B"}
+                rc = regime_color.get(ap["regime"], "#B8860B")
+                regime_badge = (
+                    f"<span style='background:{rc};color:#fff;padding:2px 6px;"
+                    f"border-radius:4px;font-size:11px;'>{ap['regime']}体制</span>"
+                )
+                vix_info = (
+                    f"VIX <b>{ap['curr_vix']:.1f}</b> "
+                    f"(1年区间 p25={ap['vix_p25']:.1f} / p75={ap['vix_p75']:.1f})"
+                )
+                bias_info = (
+                    f"Bias <b>{ap['curr_bias']*100:.1f}%</b> "
+                    f"/ 动态止盈线 {ap['curr_bias_th']*100:.1f}%"
+                )
 
-            sell_normal   = bool(_sn.iloc[-1])
-            sell_profit   = bool(_sp.iloc[-1])
-            buy_ma200     = bool(_bt.iloc[-1])
-            buy_vix_panic = bool(_bv.iloc[-1])
-            buy_reentry   = bool(_br.iloc[-1])
-
-            # 状态判定（卖出绝对优先）
-            if sell_normal or sell_profit:
-                if sell_normal:
-                    signal, color = "🚨 盾1：清仓避险", "#B42318"
-                    desc = f"<b>衰退确认！</b>跌破年线且 VIX 高压 ({curr['vix']:.1f})"
+                if ap["sell_fear_fast"]:
+                    signal = "⚡ Apollo盾0：高恐预警清仓"
+                    color  = "#B42318"
+                    desc   = (f"<b>高恐慌体制下跌破MA50！</b> {regime_badge} 提前离场，不等MA200破位。<br>"
+                              f"{vix_info} | {bias_info}")
+                elif ap["sell_profit"]:
+                    signal = "🚨 Apollo盾2：动态止盈"
+                    color  = "#B42318"
+                    desc   = (f"<b>近10日曾超买(峰值Bias {ap['curr_peak_bias10']*100:.1f}% > 阈值{ap['curr_bias_th']*100:.1f}%)，今跌穿MA20！</b> {regime_badge}<br>"
+                              f"当前Bias {ap['curr_bias']*100:.1f}% | {vix_info}")
+                elif ap["sell_normal"]:
+                    signal = "🚨 Apollo盾1：清仓避险"
+                    color  = "#B42318"
+                    desc   = (f"<b>跌破MA200且VIX高企！</b> {regime_badge}<br>"
+                              f"{vix_info} | {bias_info}")
+                elif ap["buy_vix_panic"]:
+                    signal = "🔥 Apollo刀2：左侧抄底"
+                    color  = "#027A48"
+                    desc   = (f"<b>极度恐慌（VIX>{ap['curr_vix']:.0f}）</b>且跌破MA200，迎着暴跌建仓。 {regime_badge}<br>"
+                              f"{vix_info}")
+                elif ap["buy_trend"]:
+                    signal = "🚀 Apollo刀1：右侧顺势"
+                    color  = "#027A48"
+                    desc   = (f"<b>向上突破MA200！</b>长牛起航。 {regime_badge}<br>"
+                              f"{vix_info} | {bias_info}")
+                elif ap["buy_reentry_calm"]:
+                    signal = "↩️ Apollo刀3：低恐接回(MA20)"
+                    color  = "#027A48"
+                    desc   = (f"<b>低恐慌体制，MA20站上接回。</b> {regime_badge}<br>"
+                              f"VIX处于历史低位，宽松条件再入场。 {vix_info}")
+                elif ap["buy_reentry_fear"]:
+                    signal = "↩️ Apollo刀3：压力期接回(MA50)"
+                    color  = "#027A48"
+                    desc   = (f"<b>非低恐慌体制，需MA50确认再入场。</b> {regime_badge}<br>"
+                              f"比低恐慌期更严格，防止死猫反弹接刀。 {vix_info}")
                 else:
-                    signal, color = "🚨 盾2：极值止盈", "#B42318"
-                    desc = f"<b>高位超买！</b>偏离度({curr_bias*100:.1f}%) 超过64%固定阈值且跌穿 MA20"
-            elif buy_vix_panic:
-                signal, color = "🔥 刀2：左侧抄底", "#027A48"
-                desc = f"<b>极度恐慌！</b>迎着暴跌 (VIX {curr['vix']:.1f}) 抢夺带血筹码"
-            elif buy_ma200:
-                signal, color = "🚀 刀1：右侧顺势", "#027A48"
-                desc = "<b>长牛起航！</b>向上有效突破 MA200 牛熊分界线"
-            elif buy_reentry:
-                signal, color = "↩️ 刀3：MA20接回", "#027A48"
-                desc = "<b>防踏空！</b>止盈后价格重新站上 MA20，续仓跟牛"
+                    if ap["is_buy_state"]:
+                        color = "#B42318" if ap["is_overextended"] else "#B8860B"
+                        signal = "🛡️ Apollo多头持仓"
+                        oe_warn = " ⚠️超买区" if ap["is_overextended"] else ""
+                        desc = (f"均线之上持仓{oe_warn}。 {regime_badge}<br>"
+                                f"{bias_info} | {vix_info}")
+                    else:
+                        signal, color = "💤 Apollo空仓吃息", "#667085"
+                        desc = (f"熊市等待信号。 {regime_badge}<br>"
+                                f"{vix_info} | {bias_info}")
+
+                model_tag = "<span style='font-size:10px;color:#667085;'>Apollo</span>"
+
             else:
-                if is_buy_state:
-                    color_bias = "#B42318" if is_overextended else "#B8860B"
-                    signal, color = "🛡️ 多头死拿", color_bias
-                    alert = "⚠️ 处于超买区(Bias>64%)" if is_overextended else "安全持仓"
-                    desc = f"均线之上耐心持仓 | 当前偏离度: {curr_bias*100:.1f}% (固定警戒线: 64%) - {alert}"
+                # ══ Model 08 Diamond Hands (QQQ 及其他) ══════════════
+                bias_s  = (close / ma200) - 1.0
+                is_oe_s = (bias_s > 0.64).rolling(10, min_periods=1).max().astype(bool)
+                curr_bias = float(bias_s.iloc[-1])
+                is_overextended = bool(is_oe_s.iloc[-1])
+
+                _c_bt = close > ma200
+                _bt   = _c_bt & (~_c_bt.shift(1).fillna(False))
+                _c_bv = (vix_aligned > 34.0) & (close <= ma200)
+                _bv   = _c_bv & (~_c_bv.shift(1).fillna(False))
+                _c_br = (close > ma20) & (close > ma200)
+                _br   = _c_br & (~_c_br.shift(1).fillna(False))
+                _c_sn = (close < ma200) & (vix_aligned > 22.0)
+                _sn   = _c_sn & (~_c_sn.shift(1).fillna(False))
+                _c_sp = is_oe_s & (close < ma20)
+                _sp   = _c_sp & (~_c_sp.shift(1).fillna(False))
+                _raw_buy  = _bt | _bv | _br
+                _raw_sell = _sn | _sp
+                _st = pd.Series(np.nan, index=close.index)
+                _st.loc[_raw_buy & (~_raw_sell)] = 1.0
+                _st.loc[_raw_sell]               = 0.0
+                is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
+
+                curr_vix = float(vix_aligned.iloc[-1])
+
+                sell_normal   = bool(_sn.iloc[-1])
+                sell_profit   = bool(_sp.iloc[-1])
+                buy_ma200     = bool(_bt.iloc[-1])
+                buy_vix_panic = bool(_bv.iloc[-1])
+                buy_reentry   = bool(_br.iloc[-1])
+
+                if sell_normal or sell_profit:
+                    if sell_normal:
+                        signal, color = "🚨 盾1：清仓避险", "#B42318"
+                        desc = f"<b>衰退确认！</b>跌破年线且 VIX 高压 ({curr_vix:.1f})"
+                    else:
+                        signal, color = "🚨 盾2：极值止盈", "#B42318"
+                        desc = f"<b>高位超买！</b>偏离度({curr_bias*100:.1f}%) 超过64%固定阈值且跌穿 MA20"
+                elif buy_vix_panic:
+                    signal, color = "🔥 刀2：左侧抄底", "#027A48"
+                    desc = f"<b>极度恐慌！</b>迎着暴跌 (VIX {curr_vix:.1f}) 抢夺带血筹码"
+                elif buy_ma200:
+                    signal, color = "🚀 刀1：右侧顺势", "#027A48"
+                    desc = "<b>长牛起航！</b>向上有效突破 MA200 牛熊分界线"
+                elif buy_reentry:
+                    signal, color = "↩️ 刀3：MA20接回", "#027A48"
+                    desc = "<b>防踏空！</b>止盈后价格重新站上 MA20，续仓跟牛"
                 else:
-                    signal, color = "💤 空仓吃息", "#667085"
-                    desc = f"身处熊市左侧，耐心等待系统拔刀 (当前 VIX: {curr['vix']:.1f})"
+                    if is_buy_state:
+                        color_bias = "#B42318" if is_overextended else "#B8860B"
+                        signal, color = "🛡️ 多头死拿", color_bias
+                        alert = "⚠️ 处于超买区(Bias>64%)" if is_overextended else "安全持仓"
+                        desc = f"均线之上耐心持仓 | 当前偏离度: {curr_bias*100:.1f}% (固定警戒线: 64%) - {alert}"
+                    else:
+                        signal, color = "💤 空仓吃息", "#667085"
+                        desc = f"身处熊市左侧，耐心等待系统拔刀 (当前 VIX: {curr_vix:.1f})"
+
+                model_tag = "<span style='font-size:10px;color:#667085;'>Model 08</span>"
 
             html_rows += f"""
             <tr>
-                <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:15%;'>{tk}</td>
-                <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold; width:22%;'>{signal}</td>
+                <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:12%;'>{tk}<br>{model_tag}</td>
+                <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold; width:24%;'>{signal}</td>
                 <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#475467; font-size:12px;'>{desc}</td>
             </tr>
             """
 
-        return {"title": "🧠 核心舱交易大脑 (Model 08: Diamond Hands)", "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"}
-    except Exception as e: 
+        return {
+            "title": "🧠 核心舱交易大脑  QQQ→Model 08 Diamond | TQQQ→Apollo VIX体制",
+            "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"
+        }
+    except Exception as e:
         print(f"核心操作块解析失败: {e}")
         return None
 
