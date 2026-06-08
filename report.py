@@ -6,10 +6,11 @@
 - QQQ  信号引擎：Model 08 Diamond Hands
     买入：MA200突破 / VIX>34恐慌抄底 / MA20防踏空接回
     卖出：MA200+VIX22 清仓 / 固定Bias>64%止盈
-- TQQQ 信号引擎：Model 08 基础 + Apollo VIX百分位体制叠加
-    额外卖出：高恐慌体制(VIX>过去1年75th百分位) 且 跌破MA50 → 提前离场
-    额外买入：低恐慌体制(VIX<25th百分位)接回用MA20；高恐慌体制接回要MA50确认
-    止盈：动态Bias阈值(252日85th百分位) 替代固定64%
+- TQQQ 信号引擎：纯MA200 + VIX恐慌抄底
+    基础：仅 MA200（上穿买入，下穿卖出）
+    抄底：VIX≥35 且价格在MA200以下 → 可抄底一次（每次MA200下穿周期限用一次）
+    止损：抄底后跌超10%次日开盘卖出
+    重置：抄底用后须等MA200上穿信号才重新开启抄底资格
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
 """
 
@@ -30,11 +31,15 @@ REPORT_DIR = os.path.join(PROJECT_DIR, "public")
 
 DEFAULT_CONFIG = {
     "title": "每日投资监控雷达",
-    "history_days": 500,  # 确保有足够数据计算 252日滚动分位数
+    "history_days": 500,
     "ma_windows": [20, 50, 200],
     "base_font_px": 14,
     "table_font_px": 12
 }
+
+# TQQQ 专用参数
+TQQQ_VIX_TRIGGER = 35    # VIX 触达此值可抄底
+TQQQ_STOP_PCT    = 0.10  # 抄底后跌超此幅度止损
 
 # 🟢 列名中文映射
 CN_COL_MAP = {
@@ -111,70 +116,88 @@ def _safe_float(x):
     except: return np.nan
 
 # ==========================================
-# 🔧 Apollo 信号计算辅助函数 (仅用于 TQQQ)
+# 🔧 TQQQ 状态机：纯MA200 + VIX恐慌抄底
 # ==========================================
-def _compute_apollo_signals(close: pd.Series, vix: pd.Series, ma20: pd.Series,
-                             ma50: pd.Series, ma200: pd.Series):
-    """返回 Apollo 模型在序列末端的当前信号字典。"""
-    bias        = (close / ma200) - 1.0
-    bias_th     = bias.rolling(252, min_periods=63).quantile(0.85)
-    is_oe_s     = (bias > bias_th).rolling(10, min_periods=1).max().fillna(False).astype(bool)
-    peak_bias10 = bias.rolling(10, min_periods=1).max()   # 近10日Bias峰值，用于止盈描述
+def _compute_ma200_vix_state(close: pd.Series, vix: pd.Series,
+                              vix_trigger: float = TQQQ_VIX_TRIGGER,
+                              stop_pct: float = TQQQ_STOP_PCT) -> dict:
+    """
+    在全部可用历史数据上运行状态机，返回当前最新持仓状态。
+    规则：
+      基础    — MA200上穿买入 / 下穿卖出
+      抄底    — VIX≥vix_trigger 且价格<MA200 → 可抄底一次（每轮熊市限一次）
+      止损    — 抄底后跌超 stop_pct → 次日卖出
+      重置    — 抄底后须等MA200上穿才重新允许抄底
+    """
+    ma200 = close.rolling(200, min_periods=200).mean()
+    valid = ma200.dropna().index
+    if len(valid) < 2:
+        return {}
+    close = close.loc[valid]
+    vix   = vix.reindex(valid).ffill().fillna(20.0)
+    ma200 = ma200.loc[valid]
 
-    vix_p75  = vix.rolling(252, min_periods=63).quantile(0.75)
-    vix_p25  = vix.rolling(252, min_periods=63).quantile(0.25)
-    high_fear = vix > vix_p75
-    low_fear  = vix < vix_p25
+    above       = (close > ma200).fillna(False)
+    buy_ma200_e = above  & (~above.shift(1, fill_value=above.iloc[0]))
+    sell_ma200_e= (~above) & above.shift(1, fill_value=above.iloc[0])
+    c_vix       = (vix >= vix_trigger) & (~above)
+    buy_vix_e   = c_vix & (~c_vix.shift(1, fill_value=False))
 
-    def edge(cond):
-        c = cond.fillna(False).astype(bool)
-        return c & (~c.shift(1, fill_value=False))
+    # 初始状态：价格在MA200上方则持仓，否则空仓
+    holding       = bool(above.iloc[0])
+    panic_allowed = not holding   # 若起始在MA200下方，允许抄底
+    in_panic      = False
+    panic_entry   = 0.0
+    force_sell    = False
 
-    # 买入
-    bt  = edge(close > ma200)
-    bv  = edge((vix > 34.0) & (close <= ma200))
-    brc = edge((close > ma20)  & (close > ma200) & low_fear)   # 低恐慌: MA20
-    brf = edge((close > ma50)  & (close > ma200) & (~low_fear)) # 非低恐慌: MA50
+    for i in range(len(close)):
+        cp = float(close.iloc[i])
+        if i > 0:
+            is_sell    = bool(sell_ma200_e.iloc[i - 1])
+            is_ma_buy  = bool(buy_ma200_e.iloc[i - 1])
+            is_vix_buy = bool(buy_vix_e.iloc[i - 1])
 
-    # 卖出
-    sff = edge(high_fear & (close < ma50))                     # Apollo新增: 高恐提前出
-    sn  = edge((close < ma200) & (vix > 20.0))
-    sp  = edge(is_oe_s & (close < ma20))
+            if force_sell and holding:
+                holding = False; in_panic = False
+                panic_allowed = False; panic_entry = 0.0; force_sell = False
+            elif is_sell and holding:
+                was = in_panic
+                holding = False; in_panic = False; force_sell = False
+                if was: panic_allowed = False
+            elif is_ma_buy and not holding:
+                holding = True; in_panic = False; panic_allowed = True
+            elif is_vix_buy and panic_allowed and not holding:
+                holding = True; in_panic = True
+                panic_entry = cp; panic_allowed = False
 
-    raw_buy  = bt | bv | brc | brf
-    raw_sell = sff | sn | sp
-    _st = pd.Series(np.nan, index=close.index)
-    _st.loc[raw_buy & (~raw_sell)] = 1.0
-    _st.loc[raw_sell]              = 0.0
-    is_buy_state = bool(_st.ffill().fillna(0.0).astype(bool).iloc[-1])
+        if in_panic and holding and cp < panic_entry * (1 - stop_pct):
+            force_sell = True
 
-    curr_vix      = float(vix.iloc[-1])
-    curr_p75      = float(vix_p75.iloc[-1]) if not np.isnan(vix_p75.iloc[-1]) else 30.0
-    curr_p25      = float(vix_p25.iloc[-1]) if not np.isnan(vix_p25.iloc[-1]) else 15.0
-    curr_bias     = float(bias.iloc[-1])
-    curr_bth      = float(bias_th.iloc[-1]) if not np.isnan(bias_th.iloc[-1]) else 0.85
-    curr_peak_b10 = float(peak_bias10.iloc[-1])
-
-    regime = ("高恐慌" if bool(high_fear.iloc[-1]) else
-              ("低恐慌" if bool(low_fear.iloc[-1]) else "正常"))
+    curr_close  = float(close.iloc[-1])
+    curr_ma200  = float(ma200.iloc[-1])
+    curr_vix    = float(vix.iloc[-1])
+    curr_above  = bool(above.iloc[-1])
+    bias_pct    = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
+    panic_pnl   = (curr_close / panic_entry - 1) * 100 if in_panic and panic_entry > 0 else None
+    stop_level  = panic_entry * (1 - stop_pct) if in_panic and panic_entry > 0 else None
 
     return {
-        "is_buy_state":       is_buy_state,
-        "sell_fear_fast":     bool(sff.iloc[-1]),
-        "sell_normal":        bool(sn.iloc[-1]),
-        "sell_profit":        bool(sp.iloc[-1]),
-        "buy_trend":          bool(bt.iloc[-1]),
-        "buy_vix_panic":      bool(bv.iloc[-1]),
-        "buy_reentry_calm":   bool(brc.iloc[-1]),
-        "buy_reentry_fear":   bool(brf.iloc[-1]),
-        "is_overextended":    bool(is_oe_s.iloc[-1]),
-        "curr_bias":          curr_bias,
-        "curr_bias_th":       curr_bth,
-        "curr_peak_bias10":   curr_peak_b10,
-        "curr_vix":           curr_vix,
-        "vix_p75":            curr_p75,
-        "vix_p25":            curr_p25,
-        "regime":             regime,
+        "holding":         holding,
+        "in_panic":        in_panic,
+        "panic_allowed":   panic_allowed,
+        "panic_entry":     panic_entry,
+        "panic_pnl":       panic_pnl,       # 抄底仓位当前浮盈%
+        "stop_level":      stop_level,       # 止损价
+        "force_sell":      force_sell,       # 止损已触发，明日执行
+        "above_ma200":     curr_above,
+        "curr_ma200":      curr_ma200,
+        "curr_close":      curr_close,
+        "curr_vix":        curr_vix,
+        "bias_pct":        bias_pct,
+        # 今日边沿信号
+        "today_sell":      bool(sell_ma200_e.iloc[-1]),
+        "today_buy_ma200": bool(buy_ma200_e.iloc[-1]),
+        "today_buy_vix":   bool(buy_vix_e.iloc[-1]) and panic_allowed and not holding,
     }
 
 
@@ -240,37 +263,32 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                     strategy_hint, daily_action = "💰 空仓收息", "稳定收息"
 
                 elif t == "TQQQ":
-                    # ── Apollo 信号 ──
-                    ap = _compute_apollo_signals(close, vix_aligned, ma20, ma50, ma200)
-                    regime_tag = {"高恐慌": "🔴", "低恐慌": "🟢", "正常": "🟡"}.get(ap["regime"], "🟡")
-                    regime_str = f"{regime_tag}{ap['regime']}体制 VIX={ap['curr_vix']:.1f}(p75={ap['vix_p75']:.1f})"
-
-                    if ap["sell_fear_fast"]:
-                        strategy_hint = f"⚡ Apollo高恐预警卖出 | {regime_str}"
+                    # ── 纯MA200 + VIX抄底 状态机 ──
+                    st = _compute_ma200_vix_state(close, vix_aligned)
+                    if not st:
+                        strategy_hint = "数据不足"
+                    elif st["force_sell"]:
+                        strategy_hint = f"🛑 止损预警 明日卖出 | VIX={st['curr_vix']:.1f}"
                         daily_action  = "卖出"
-                    elif ap["sell_profit"]:
-                        strategy_hint = f"🚨 动态止盈(Bias>{ap['curr_bias_th']*100:.0f}%) | {regime_str}"
+                    elif st["today_sell"]:
+                        strategy_hint = f"🚨 MA200破位卖出 | VIX={st['curr_vix']:.1f}"
                         daily_action  = "卖出"
-                    elif ap["sell_normal"]:
-                        strategy_hint = f"🚨 跌破MA200+VIX高企 | {regime_str}"
-                        daily_action  = "卖出"
-                    elif ap["buy_vix_panic"]:
-                        strategy_hint = f"🔥 VIX极度恐慌抄底 | {regime_str}"
+                    elif st["today_buy_vix"]:
+                        strategy_hint = f"🔥 VIX≥{TQQQ_VIX_TRIGGER}抄底买入 | VIX={st['curr_vix']:.1f}"
                         daily_action  = "买入"
-                    elif ap["buy_trend"]:
-                        strategy_hint = f"🚀 突破MA200右侧 | {regime_str}"
+                    elif st["today_buy_ma200"]:
+                        strategy_hint = f"🚀 MA200上穿买入 | VIX={st['curr_vix']:.1f}"
                         daily_action  = "买入"
-                    elif ap["buy_reentry_calm"]:
-                        strategy_hint = f"↩️ 低恐接回(MA20) | {regime_str}"
-                        daily_action  = "买入"
-                    elif ap["buy_reentry_fear"]:
-                        strategy_hint = f"↩️ 压力期接回(MA50) | {regime_str}"
-                        daily_action  = "买入"
-                    elif ap["is_buy_state"]:
-                        bias_warn = f" ⚠️Bias={ap['curr_bias']*100:.0f}%>阈值{ap['curr_bias_th']*100:.0f}%" if ap["is_overextended"] else f" Bias={ap['curr_bias']*100:.0f}%"
-                        strategy_hint = f"持仓中{bias_warn} | {regime_str}"
+                    elif st["holding"] and st["in_panic"]:
+                        pnl = f"{st['panic_pnl']:+.1f}%" if st["panic_pnl"] is not None else "?"
+                        strategy_hint = f"⚡ 抄底持仓({pnl}) 止损线{st['stop_level']:.3f} | VIX={st['curr_vix']:.1f}"
+                    elif st["holding"]:
+                        strategy_hint = f"🛡️ MA200上方持仓 Bias={st['bias_pct']:+.1f}% | VIX={st['curr_vix']:.1f}"
+                    elif not st["panic_allowed"]:
+                        strategy_hint = f"💤 空仓等MA200上穿 | VIX={st['curr_vix']:.1f}"
                     else:
-                        strategy_hint = f"空仓等信号 | {regime_str}"
+                        vix_tag = f"🔥VIX={st['curr_vix']:.1f}≥{TQQQ_VIX_TRIGGER}可抄底" if st["curr_vix"] >= TQQQ_VIX_TRIGGER and not st["above_ma200"] else f"VIX={st['curr_vix']:.1f}"
+                        strategy_hint = f"💤 空仓等信号 | {vix_tag}"
 
                 else:
                     # ── Model 08 Diamond Hands (其他品种) ──
@@ -367,72 +385,75 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             ma200 = close.rolling(200).mean()
 
             if tk == "TQQQ":
-                # ══ Apollo 信号 ══════════════════════════════════════
-                ap = _compute_apollo_signals(close, vix_aligned, ma20, ma50, ma200)
-
-                regime_color = {"高恐慌": "#B42318", "低恐慌": "#027A48", "正常": "#B8860B"}
-                rc = regime_color.get(ap["regime"], "#B8860B")
-                regime_badge = (
-                    f"<span style='background:{rc};color:#fff;padding:2px 6px;"
-                    f"border-radius:4px;font-size:11px;'>{ap['regime']}体制</span>"
-                )
-                vix_info = (
-                    f"VIX <b>{ap['curr_vix']:.1f}</b> "
-                    f"(1年区间 p25={ap['vix_p25']:.1f} / p75={ap['vix_p75']:.1f})"
-                )
-                bias_info = (
-                    f"Bias <b>{ap['curr_bias']*100:.1f}%</b> "
-                    f"/ 动态止盈线 {ap['curr_bias_th']*100:.1f}%"
-                )
-
-                if ap["sell_fear_fast"]:
-                    signal = "⚡ Apollo盾0：高恐预警清仓"
-                    color  = "#B42318"
-                    desc   = (f"<b>高恐慌体制下跌破MA50！</b> {regime_badge} 提前离场，不等MA200破位。<br>"
-                              f"{vix_info} | {bias_info}")
-                elif ap["sell_profit"]:
-                    signal = "🚨 Apollo盾2：动态止盈"
-                    color  = "#B42318"
-                    desc   = (f"<b>近10日曾超买(峰值Bias {ap['curr_peak_bias10']*100:.1f}% > 阈值{ap['curr_bias_th']*100:.1f}%)，今跌穿MA20！</b> {regime_badge}<br>"
-                              f"当前Bias {ap['curr_bias']*100:.1f}% | {vix_info}")
-                elif ap["sell_normal"]:
-                    signal = "🚨 Apollo盾1：清仓避险"
-                    color  = "#B42318"
-                    desc   = (f"<b>跌破MA200且VIX高企！</b> {regime_badge}<br>"
-                              f"{vix_info} | {bias_info}")
-                elif ap["buy_vix_panic"]:
-                    signal = "🔥 Apollo刀2：左侧抄底"
-                    color  = "#027A48"
-                    desc   = (f"<b>极度恐慌（VIX>{ap['curr_vix']:.0f}）</b>且跌破MA200，迎着暴跌建仓。 {regime_badge}<br>"
-                              f"{vix_info}")
-                elif ap["buy_trend"]:
-                    signal = "🚀 Apollo刀1：右侧顺势"
-                    color  = "#027A48"
-                    desc   = (f"<b>向上突破MA200！</b>长牛起航。 {regime_badge}<br>"
-                              f"{vix_info} | {bias_info}")
-                elif ap["buy_reentry_calm"]:
-                    signal = "↩️ Apollo刀3：低恐接回(MA20)"
-                    color  = "#027A48"
-                    desc   = (f"<b>低恐慌体制，MA20站上接回。</b> {regime_badge}<br>"
-                              f"VIX处于历史低位，宽松条件再入场。 {vix_info}")
-                elif ap["buy_reentry_fear"]:
-                    signal = "↩️ Apollo刀3：压力期接回(MA50)"
-                    color  = "#027A48"
-                    desc   = (f"<b>非低恐慌体制，需MA50确认再入场。</b> {regime_badge}<br>"
-                              f"比低恐慌期更严格，防止死猫反弹接刀。 {vix_info}")
+                # ══ 纯MA200 + VIX≥35 恐慌抄底 状态机 ══════════════
+                st = _compute_ma200_vix_state(close, vix_aligned)
+                if not st:
+                    signal, color, desc = "数据不足", "#667085", "历史数据不够，无法计算MA200"
                 else:
-                    if ap["is_buy_state"]:
-                        color = "#B42318" if ap["is_overextended"] else "#B8860B"
-                        signal = "🛡️ Apollo多头持仓"
-                        oe_warn = " ⚠️超买区" if ap["is_overextended"] else ""
-                        desc = (f"均线之上持仓{oe_warn}。 {regime_badge}<br>"
-                                f"{bias_info} | {vix_info}")
-                    else:
-                        signal, color = "💤 Apollo空仓吃息", "#667085"
-                        desc = (f"熊市等待信号。 {regime_badge}<br>"
-                                f"{vix_info} | {bias_info}")
+                    ma200_info = (f"MA200 <b>{st['curr_ma200']:.2f}</b> | "
+                                  f"现价 <b>{st['curr_close']:.2f}</b> "
+                                  f"({'上方' if st['above_ma200'] else '下方'} {abs(st['bias_pct']):.1f}%)")
+                    vix_info   = f"VIX <b>{st['curr_vix']:.1f}</b> (抄底线≥{TQQQ_VIX_TRIGGER})"
 
-                model_tag = "<span style='font-size:10px;color:#667085;'>Apollo</span>"
+                    if st["force_sell"]:
+                        signal = "🛑 止损预警：明日开盘卖出"
+                        color  = "#B42318"
+                        desc   = (f"<b>抄底仓位跌破止损线(买入价×{1-TQQQ_STOP_PCT:.0%})！</b>"
+                                  f"将于明日开盘执行卖出。<br>{vix_info} | {ma200_info}")
+
+                    elif st["today_sell"]:
+                        signal = "🚨 MA200破位：清仓"
+                        color  = "#B42318"
+                        desc   = f"<b>价格下穿MA200，趋势转坏，清仓离场。</b><br>{vix_info} | {ma200_info}"
+
+                    elif st["today_buy_vix"]:
+                        signal = f"🔥 VIX≥{TQQQ_VIX_TRIGGER}：恐慌抄底"
+                        color  = "#027A48"
+                        desc   = (f"<b>VIX触达恐慌区间，价格在MA200以下，一次性抄底机会。</b>"
+                                  f"止损线：买入价×{1-TQQQ_STOP_PCT:.0%}<br>{vix_info} | {ma200_info}")
+
+                    elif st["today_buy_ma200"]:
+                        signal = "🚀 MA200上穿：买入"
+                        color  = "#027A48"
+                        desc   = (f"<b>价格上穿MA200，趋势回升，建仓入场。</b>"
+                                  f"抄底资格同步重置。<br>{vix_info} | {ma200_info}")
+
+                    elif st["holding"] and st["in_panic"]:
+                        pnl    = f"{st['panic_pnl']:+.1f}%" if st["panic_pnl"] is not None else "?"
+                        sl_px  = f"{st['stop_level']:.3f}" if st["stop_level"] else "?"
+                        pnl_v  = st["panic_pnl"] or 0
+                        color  = "#B42318" if pnl_v < -7 else ("#027A48" if pnl_v > 0 else "#B8860B")
+                        signal = f"⚡ 抄底持仓中 ({pnl})"
+                        desc   = (f"持有VIX恐慌抄底仓位 | 浮盈 <b>{pnl}</b> | "
+                                  f"止损线 {sl_px} ({TQQQ_STOP_PCT:.0%})<br>{vix_info} | {ma200_info}")
+
+                    elif st["holding"]:
+                        color  = "#B8860B"
+                        signal = "🛡️ MA200上方持仓"
+                        desc   = (f"价格在MA200上方，持仓跟牛。"
+                                  f"{'⚠️偏离较高，注意回调' if st['bias_pct'] > 60 else ''}<br>"
+                                  f"{vix_info} | {ma200_info}")
+
+                    elif not st["panic_allowed"]:
+                        signal = "💤 空仓：等MA200上穿"
+                        color  = "#667085"
+                        desc   = (f"本轮熊市抄底资格已用，须等价格上穿MA200才可再次入场。<br>"
+                                  f"{vix_info} | {ma200_info}")
+
+                    else:
+                        # 空仓 + 抄底资格可用
+                        if st["curr_vix"] >= TQQQ_VIX_TRIGGER and not st["above_ma200"]:
+                            signal = f"🔥 VIX={st['curr_vix']:.1f}≥{TQQQ_VIX_TRIGGER}（可抄底，等边沿）"
+                            color  = "#027A48"
+                            desc   = (f"VIX处于恐慌区间且价格在MA200以下，满足抄底条件，等待明日信号确认。<br>"
+                                      f"{vix_info} | {ma200_info}")
+                        else:
+                            signal = "💤 空仓等信号"
+                            color  = "#667085"
+                            desc   = (f"等待 VIX≥{TQQQ_VIX_TRIGGER} 抄底 或 MA200上穿买入。<br>"
+                                      f"{vix_info} | {ma200_info}")
+
+                model_tag = "<span style='font-size:10px;color:#667085;'>MA200+VIX35</span>"
 
             else:
                 # ══ Model 08 Diamond Hands (QQQ 及其他) ══════════════
@@ -503,7 +524,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             """
 
         return {
-            "title": "🧠 核心舱交易大脑  QQQ→Model 08 Diamond | TQQQ→Apollo VIX体制",
+            "title": f"🧠 核心舱交易大脑  QQQ→Model 08 Diamond Hands | TQQQ→纯MA200+VIX≥{TQQQ_VIX_TRIGGER}恐慌抄底",
             "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"
         }
     except Exception as e:
