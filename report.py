@@ -582,13 +582,13 @@ def main():
          None, 
          ["Name", "Ticker", "Close", "ChangePct", "PS", "PE_Trailing", "PE_Forward", "MA20", "MA200", "Ret250D"], "qqq_top"),
          
-        ("🌏 亚洲市场横向对比", 
-         lambda it: it["category"] == "indices" and it["market"] in ["HK", "CN", "JP", "IN", "ASIA"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D"], "asia"),
-         
-        ("🇪🇺 欧洲及其他市场", 
-         lambda it: it["category"] == "indices" and it["market"] in ["EU", "UK", "EUROPE", "GL", "OT"], 
-         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D"], "eu"),
+        ("🌏 亚洲市场横向对比",
+         lambda it: it["category"] == "indices" and it["market"] in ["HK", "CN", "JP", "IN", "ASIA"],
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200"], "asia"),
+
+        ("🇪🇺 欧洲及其他市场",
+         lambda it: it["category"] == "indices" and it["market"] in ["EU", "UK", "EUROPE", "GL", "OT"],
+         ["Name", "Ticker", "Close", "ChangePct", "Ret20D", "Ret250D", "MA200"], "eu"),
          
         ("📊 行业与主题 ETF", 
          lambda it: it["category"] == "sectors" and it["ticker"] not in ["QQQ", "TQQQ", "SGOV"], 
