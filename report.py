@@ -4,11 +4,14 @@
 """
 投资监控雷达 - 极致聚焦版
 - QQQ  信号引擎：纯MA200（上穿买入，下穿卖出，无其他过滤）
-- TQQQ 信号引擎：纯MA200 + VIX恐慌抄底
-    基础：仅 MA200（上穿买入，下穿卖出）
-    抄底：VIX≥35 且价格在MA200以下 → 可抄底一次（每次MA200下穿周期限用一次）
-    止损：抄底后跌超10%次日开盘卖出
-    重置：抄底用后须等MA200上穿信号才重新开启抄底资格
+- TQQQ 信号引擎：核心舱同时展示两套独立逻辑（各占一行）
+    行1 MA200(触发投入)：核心持仓跟随纯MA200（上穿买入/下穿卖出）；
+        新增定投资金不跟随每日状态直接买入，而是先留在无风险现金里，
+        只有在"MA200上穿买入"这个触发信号出现的那一天，才把累积的
+        待投入资金一并买入。
+    行2 ADX20切换(MA200/持有)：Wilder 14周期ADX(T-1) > 20（趋势确认）
+        时跟随MA200信号（上穿买/下穿卖）；ADX(T-1) ≤ 20（震荡，含预热期）
+        时不理会MA200状态，无条件满仓持有。
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
 """
 
@@ -35,9 +38,9 @@ DEFAULT_CONFIG = {
     "table_font_px": 12
 }
 
-# TQQQ 专用参数
-TQQQ_VIX_TRIGGER = 35    # VIX 触达此值可抄底
-TQQQ_STOP_PCT    = 0.10  # 抄底后跌超此幅度止损
+# TQQQ 核心舱: ADX20切换逻辑用到的阈值
+TQQQ_ADX_PERIOD    = 14
+TQQQ_ADX_THRESHOLD = 20
 
 # 🟢 列名中文映射
 CN_COL_MAP = {
@@ -114,88 +117,135 @@ def _safe_float(x):
     except: return np.nan
 
 # ==========================================
-# 🔧 TQQQ 状态机：纯MA200 + VIX恐慌抄底
+# 🔧 Wilder 14周期 ADX（手写实现，无未来函数）
 # ==========================================
-def _compute_ma200_vix_state(close: pd.Series, vix: pd.Series,
-                              vix_trigger: float = TQQQ_VIX_TRIGGER,
-                              stop_pct: float = TQQQ_STOP_PCT) -> dict:
-    """
-    在全部可用历史数据上运行状态机，返回当前最新持仓状态。
-    规则：
-      基础    — MA200上穿买入 / 下穿卖出
-      抄底    — VIX≥vix_trigger 且价格<MA200 → 可抄底一次（每轮熊市限一次）
-      止损    — 抄底后跌超 stop_pct → 次日卖出
-      重置    — 抄底后须等MA200上穿才重新允许抄底
-    """
+def _wilder_smooth(values: np.ndarray, period: int, mode: str) -> np.ndarray:
+    """mode='sum': 首值=前period个观测之和，递推 S_t = S_{t-1} - S_{t-1}/period + x_t
+    （用于 TR / +DM / -DM）。
+    mode='avg': 首值=前period个观测均值，递推 A_t = ((period-1)*A_{t-1}+x_t)/period
+    （用于 DX -> ADX）。"""
+    n = len(values)
+    out = np.full(n, np.nan)
+    valid = ~np.isnan(values)
+    if not valid.any():
+        return out
+    start = int(np.argmax(valid))
+    if start + period > n:
+        return out
+    window = values[start:start + period]
+    if mode == "sum":
+        out[start + period - 1] = window.sum()
+        for i in range(start + period, n):
+            out[i] = out[i - 1] - out[i - 1] / period + values[i]
+    else:
+        out[start + period - 1] = window.mean()
+        for i in range(start + period, n):
+            out[i] = ((period - 1) * out[i - 1] + values[i]) / period
+    return out
+
+
+def _wilder_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = TQQQ_ADX_PERIOD) -> pd.Series:
+    prev_close = close.shift(1)
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    up_move   = high - prev_high
+    down_move = prev_low - low
+    plus_dm  = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=close.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=close.index)
+
+    tr.iloc[0] = np.nan
+    plus_dm.iloc[0] = np.nan
+    minus_dm.iloc[0] = np.nan
+
+    tr_s    = pd.Series(_wilder_smooth(tr.to_numpy(), period, "sum"), index=close.index)
+    plus_s  = pd.Series(_wilder_smooth(plus_dm.to_numpy(), period, "sum"), index=close.index)
+    minus_s = pd.Series(_wilder_smooth(minus_dm.to_numpy(), period, "sum"), index=close.index)
+
+    plus_di  = 100 * plus_s / tr_s
+    minus_di = 100 * minus_s / tr_s
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+
+    return pd.Series(_wilder_smooth(dx.to_numpy(), period, "avg"), index=close.index)
+
+
+# ==========================================
+# 🔧 TQQQ 核心舱：两套独立逻辑
+# ==========================================
+def _compute_ma200_signal(close: pd.Series) -> dict:
+    """纯 MA200：收盘上穿买入 / 下穿卖出。用于"MA200(触发投入)"行——
+    核心持仓按此信号进出；新增定投资金只在 today_buy 的那一天才和累积的
+    待投入资金一并买入，其余时间新增资金留在无风险现金里。"""
     ma200 = close.rolling(200, min_periods=200).mean()
     valid = ma200.dropna().index
     if len(valid) < 2:
         return {}
-    close = close.loc[valid]
-    vix   = vix.reindex(valid).ffill().fillna(20.0)
-    ma200 = ma200.loc[valid]
+    close_v = close.loc[valid]
+    ma200_v = ma200.loc[valid]
 
-    above       = (close > ma200).fillna(False)
-    buy_ma200_e = above  & (~above.shift(1, fill_value=above.iloc[0]))
-    sell_ma200_e= (~above) & above.shift(1, fill_value=above.iloc[0])
-    c_vix       = (vix >= vix_trigger) & (~above)
-    buy_vix_e   = c_vix & (~c_vix.shift(1, fill_value=False))
+    above  = (close_v > ma200_v).fillna(False)
+    buy_e  = above & (~above.shift(1, fill_value=above.iloc[0]))
+    sell_e = (~above) & above.shift(1, fill_value=above.iloc[0])
 
-    # 初始状态：价格在MA200上方则持仓，否则空仓
-    holding       = bool(above.iloc[0])
-    panic_allowed = not holding   # 若起始在MA200下方，允许抄底
-    in_panic      = False
-    panic_entry   = 0.0
-    force_sell    = False
-
-    for i in range(len(close)):
-        cp = float(close.iloc[i])
-        if i > 0:
-            is_sell    = bool(sell_ma200_e.iloc[i - 1])
-            is_ma_buy  = bool(buy_ma200_e.iloc[i - 1])
-            is_vix_buy = bool(buy_vix_e.iloc[i - 1])
-
-            if force_sell and holding:
-                holding = False; in_panic = False
-                panic_allowed = False; panic_entry = 0.0; force_sell = False
-            elif is_sell and holding:
-                was = in_panic
-                holding = False; in_panic = False; force_sell = False
-                if was: panic_allowed = False
-            elif is_ma_buy and not holding:
-                holding = True; in_panic = False; panic_allowed = True
-            elif is_vix_buy and panic_allowed and not holding:
-                holding = True; in_panic = True
-                panic_entry = cp; panic_allowed = False
-
-        if in_panic and holding and cp < panic_entry * (1 - stop_pct):
-            force_sell = True
-
-    curr_close  = float(close.iloc[-1])
-    curr_ma200  = float(ma200.iloc[-1])
-    curr_vix    = float(vix.iloc[-1])
-    curr_above  = bool(above.iloc[-1])
-    bias_pct    = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
-    panic_pnl   = (curr_close / panic_entry - 1) * 100 if in_panic and panic_entry > 0 else None
-    stop_level  = panic_entry * (1 - stop_pct) if in_panic and panic_entry > 0 else None
+    curr_close = float(close_v.iloc[-1])
+    curr_ma200 = float(ma200_v.iloc[-1])
+    bias_pct   = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
 
     return {
-        "holding":         holding,
-        "in_panic":        in_panic,
-        "panic_allowed":   panic_allowed,
-        "panic_entry":     panic_entry,
-        "panic_pnl":       panic_pnl,       # 抄底仓位当前浮盈%
-        "stop_level":      stop_level,       # 止损价
-        "force_sell":      force_sell,       # 止损已触发，明日执行
-        "above_ma200":     curr_above,
-        "curr_ma200":      curr_ma200,
-        "curr_close":      curr_close,
-        "curr_vix":        curr_vix,
-        "bias_pct":        bias_pct,
-        # 今日边沿信号
-        "today_sell":      bool(sell_ma200_e.iloc[-1]),
-        "today_buy_ma200": bool(buy_ma200_e.iloc[-1]),
-        "today_buy_vix":   bool(buy_vix_e.iloc[-1]) and panic_allowed and not holding,
+        "above_ma200": bool(above.iloc[-1]),
+        "today_buy":   bool(buy_e.iloc[-1]),
+        "today_sell":  bool(sell_e.iloc[-1]),
+        "curr_close":  curr_close,
+        "curr_ma200":  curr_ma200,
+        "bias_pct":    bias_pct,
+    }
+
+
+def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Series,
+                                  adx_threshold: float = TQQQ_ADX_THRESHOLD) -> dict:
+    """ADX(T-1) > threshold（趋势确认）-> 跟随MA200信号（上穿买/下穿卖）
+    ADX(T-1) <= threshold（震荡，含ADX预热期）-> 不理会MA200状态，无条件满仓持有。"""
+    ma200 = close.rolling(200, min_periods=200).mean()
+    adx = _wilder_adx(high, low, close, period=TQQQ_ADX_PERIOD)
+
+    valid = ma200.dropna().index
+    if len(valid) < 2:
+        return {}
+    close_v = close.loc[valid]
+    ma200_v = ma200.loc[valid]
+    adx_v   = adx.reindex(valid)
+
+    above      = (close_v > ma200_v).fillna(False)
+    above_prev = above.shift(1, fill_value=above.iloc[0])
+    adx_prev   = adx_v.shift(1)
+    trending   = (adx_prev > adx_threshold).fillna(False)
+
+    holding = pd.Series(np.where(trending.to_numpy(), above_prev.to_numpy(), True), index=close_v.index)
+    prev_holding = holding.shift(1, fill_value=holding.iloc[0])
+    buy_e  = holding & (~prev_holding)
+    sell_e = (~holding) & prev_holding
+
+    curr_close = float(close_v.iloc[-1])
+    curr_ma200 = float(ma200_v.iloc[-1])
+    curr_adx   = float(adx_v.iloc[-1]) if pd.notna(adx_v.iloc[-1]) else float("nan")
+    bias_pct   = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
+
+    return {
+        "holding":     bool(holding.iloc[-1]),
+        "today_buy":   bool(buy_e.iloc[-1]),
+        "today_sell":  bool(sell_e.iloc[-1]),
+        "is_trending": bool(trending.iloc[-1]),
+        "above_ma200": bool(above.iloc[-1]),
+        "curr_adx":    curr_adx,
+        "curr_ma200":  curr_ma200,
+        "curr_close":  curr_close,
+        "bias_pct":    bias_pct,
     }
 
 
@@ -207,7 +257,7 @@ def _compute_ma200_vix_state(close: pd.Series, vix: pd.Series,
 def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFrame:
     if not ticker_map: return pd.DataFrame()
     tickers = list(ticker_map.keys())
-    fetch_list = list(set(tickers + ["^VIX"]))
+    fetch_list = list(set(tickers))
 
     raw_data = None
     for attempt in range(3):
@@ -218,9 +268,6 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
         except: time.sleep(2)
 
     if raw_data is None or raw_data.empty: return pd.DataFrame()
-
-    if "^VIX" in raw_data.columns.levels[0]: vix_df = raw_data["^VIX"]["Close"].dropna().sort_index()
-    else: vix_df = pd.Series(dtype=float)
 
     rows = []
     for t in tickers:
@@ -233,13 +280,10 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
             df_t = df_t.dropna(subset=["Close"]).sort_index()
             if len(df_t) < 201: continue
             close = df_t["Close"]
-            vix_aligned = vix_df.reindex(close.index).ffill() if not vix_df.empty else pd.Series(np.nan, index=close.index)
 
             curr = _safe_float(close.iloc[-1])
             prev = _safe_float(close.iloc[-2])
             pct = (curr / prev - 1) * 100 if prev else np.nan
-
-            curr_vix = _safe_float(vix_aligned.iloc[-1]) if len(vix_aligned) >= 1 else np.nan
 
             ma20  = close.rolling(20).mean()
             ma50  = close.rolling(50).mean()
@@ -261,32 +305,55 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                     strategy_hint, daily_action = "💰 空仓收息", "稳定收息"
 
                 elif t == "TQQQ":
-                    # ── 纯MA200 + VIX抄底 状态机 ──
-                    st = _compute_ma200_vix_state(close, vix_aligned)
-                    if not st:
-                        strategy_hint = "数据不足"
-                    elif st["force_sell"]:
-                        strategy_hint = f"🛑 止损预警 明日卖出 | VIX={st['curr_vix']:.1f}"
-                        daily_action  = "卖出"
-                    elif st["today_sell"]:
-                        strategy_hint = f"🚨 MA200破位卖出 | VIX={st['curr_vix']:.1f}"
-                        daily_action  = "卖出"
-                    elif st["today_buy_vix"]:
-                        strategy_hint = f"🔥 VIX≥{TQQQ_VIX_TRIGGER}抄底买入 | VIX={st['curr_vix']:.1f}"
-                        daily_action  = "买入"
-                    elif st["today_buy_ma200"]:
-                        strategy_hint = f"🚀 MA200上穿买入 | VIX={st['curr_vix']:.1f}"
-                        daily_action  = "买入"
-                    elif st["holding"] and st["in_panic"]:
-                        pnl = f"{st['panic_pnl']:+.1f}%" if st["panic_pnl"] is not None else "?"
-                        strategy_hint = f"⚡ 抄底持仓({pnl}) 止损线{st['stop_level']:.3f} | VIX={st['curr_vix']:.1f}"
-                    elif st["holding"]:
-                        strategy_hint = f"🛡️ MA200上方持仓 Bias={st['bias_pct']:+.1f}% | VIX={st['curr_vix']:.1f}"
-                    elif not st["panic_allowed"]:
-                        strategy_hint = f"💤 空仓等MA200上穿 | VIX={st['curr_vix']:.1f}"
+                    # ── 核心舱两套独立逻辑，各输出一行 ──
+                    high, low = df_t["High"], df_t["Low"]
+                    ma_sig  = _compute_ma200_signal(close)
+                    adx_sig = _compute_adx20_switch_signal(close, high, low)
+
+                    if not ma_sig:
+                        ma_hint, ma_action = "数据不足", "观望"
+                    elif ma_sig["today_sell"]:
+                        ma_hint, ma_action = "🚨 MA200破位卖出 | 待投入资金续留现金,等下次上穿", "卖出"
+                    elif ma_sig["today_buy"]:
+                        ma_hint, ma_action = "🚀 MA200上穿买入 | 累积待投入资金一并买入", "买入"
+                    elif ma_sig["above_ma200"]:
+                        ma_hint, ma_action = f"🛡️ MA200上方持仓 Bias={ma_sig['bias_pct']:+.1f}% | 新增资金续留现金等触发", "观望"
                     else:
-                        vix_tag = f"🔥VIX={st['curr_vix']:.1f}≥{TQQQ_VIX_TRIGGER}可抄底" if st["curr_vix"] >= TQQQ_VIX_TRIGGER and not st["above_ma200"] else f"VIX={st['curr_vix']:.1f}"
-                        strategy_hint = f"💤 空仓等信号 | {vix_tag}"
+                        ma_hint, ma_action = f"💤 MA200下方空仓 Bias={ma_sig['bias_pct']:+.1f}% | 新增资金留现金等上穿", "观望"
+
+                    if not adx_sig:
+                        adx_hint, adx_action = "数据不足", "观望"
+                    else:
+                        adx_txt = f"ADX={adx_sig['curr_adx']:.1f}" if not np.isnan(adx_sig["curr_adx"]) else "ADX=NA"
+                        if adx_sig["today_sell"]:
+                            adx_hint, adx_action = f"🚨 趋势确认下穿卖出 | {adx_txt}", "卖出"
+                        elif adx_sig["today_buy"] and adx_sig["is_trending"]:
+                            adx_hint, adx_action = f"🚀 趋势确认上穿买入 | {adx_txt}", "买入"
+                        elif adx_sig["today_buy"]:
+                            adx_hint, adx_action = f"🔄 转入震荡恢复满仓 | {adx_txt}", "买入"
+                        elif adx_sig["is_trending"]:
+                            state_txt = "持仓中" if adx_sig["holding"] else "空仓中"
+                            adx_hint, adx_action = f"📈 趋势日跟随MA200({state_txt}) | {adx_txt}", "观望"
+                        else:
+                            adx_hint, adx_action = f"💤 震荡日无条件持有 | {adx_txt}", "观望"
+
+                    ret20  = (curr / close.iloc[-21]  - 1) * 100 if len(close) > 21  else np.nan
+                    ret250 = (curr / close.iloc[-251] - 1) * 100 if len(close) > 251 else np.nan
+                    vol_ratio = np.nan
+                    if "Volume" in df_t.columns and len(df_t) >= 22:
+                        v_avg = df_t["Volume"].iloc[-21:-1].mean()
+                        if v_avg and v_avg > 0: vol_ratio = _safe_float(df_t["Volume"].iloc[-1]) / v_avg
+
+                    base_row = {
+                        "Ticker": t, "Close": curr, "ChangePct": pct, "VolRatio": vol_ratio,
+                        "MA20": curr_ma20, "MA50": curr_ma50, "MA200": curr_ma200,
+                        "Ret20D": ret20, "Ret250D": ret250,
+                    }
+                    rows.append({**base_row, "Name": f"{ticker_map.get(t, t)}(MA200触发投入)",
+                                 "StrategyHint": ma_hint, "DailyAction": ma_action})
+                    rows.append({**base_row, "Name": f"{ticker_map.get(t, t)}(ADX20切换/MA200-持有)",
+                                 "StrategyHint": adx_hint, "DailyAction": adx_action})
+                    continue
 
                 else:
                     # ── 纯 MA200（QQQ 及其他品种）──
@@ -329,100 +396,96 @@ def add_trend_flags(df: pd.DataFrame) -> pd.DataFrame:
 # ==========================================
 # 🧠 核心舱：QQQ → Model 08 | TQQQ → Apollo
 # ==========================================
+def _render_action_row(tk_label: str, model_tag_text: str, signal: str, color: str, desc: str) -> str:
+    model_tag = f"<span style='font-size:10px;color:#667085;'>{model_tag_text}</span>"
+    return f"""
+    <tr>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:12%;'>{tk_label}<br>{model_tag}</td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold; width:24%;'>{signal}</td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#475467; font-size:12px;'>{desc}</td>
+    </tr>
+    """
+
+
 def get_today_action_block(tickers=["QQQ", "TQQQ"]):
     try:
-        fetch_list = tickers + ["^VIX"]
-        df_raw = yf.download(fetch_list, period="2y", auto_adjust=False, group_by="ticker", threads=False, progress=False)
+        df_raw = yf.download(tickers, period="2y", auto_adjust=False, group_by="ticker", threads=False, progress=False)
         if df_raw.empty: return None
-
-        if "^VIX" in df_raw.columns.levels[0]:
-            vix_series = df_raw["^VIX"]["Close"].dropna()
-        else: return None
 
         html_rows = ""
         for tk in tickers:
-            if tk not in df_raw.columns.levels[0]: continue
+            if not hasattr(df_raw.columns, "levels") or tk not in df_raw.columns.levels[0]: continue
             close = df_raw[tk]["Close"].dropna()
             if len(close) < 252: continue
-
-            vix_aligned = vix_series.reindex(close.index).ffill().dropna()
-            common_idx  = close.index.intersection(vix_aligned.index)
-            close       = close.loc[common_idx]
-            vix_aligned = vix_aligned.loc[common_idx]
-            if len(close) < 2: continue
 
             ma200 = close.rolling(200).mean()
 
             if tk == "TQQQ":
-                # ══ 纯MA200 + VIX≥35 恐慌抄底 状态机 ══════════════
-                st = _compute_ma200_vix_state(close, vix_aligned)
-                if not st:
+                high = df_raw[tk]["High"].reindex(close.index)
+                low  = df_raw[tk]["Low"].reindex(close.index)
+                ma_sig  = _compute_ma200_signal(close)
+                adx_sig = _compute_adx20_switch_signal(close, high, low)
+
+                # ══ 行1: MA200(触发投入) ══════════════════════════
+                if not ma_sig:
                     signal, color, desc = "数据不足", "#667085", "历史数据不够，无法计算MA200"
                 else:
-                    ma200_info = (f"MA200 <b>{st['curr_ma200']:.2f}</b> | "
-                                  f"现价 <b>{st['curr_close']:.2f}</b> "
-                                  f"({'上方' if st['above_ma200'] else '下方'} {abs(st['bias_pct']):.1f}%)")
-                    vix_info   = f"VIX <b>{st['curr_vix']:.1f}</b> (抄底线≥{TQQQ_VIX_TRIGGER})"
-
-                    if st["force_sell"]:
-                        signal = "🛑 止损预警：明日开盘卖出"
+                    ma200_info = (f"MA200 <b>{ma_sig['curr_ma200']:.2f}</b> | 现价 <b>{ma_sig['curr_close']:.2f}</b> "
+                                  f"({'上方' if ma_sig['above_ma200'] else '下方'} {abs(ma_sig['bias_pct']):.1f}%)")
+                    if ma_sig["today_sell"]:
+                        signal = "🚨 MA200破位：卖出"
                         color  = "#B42318"
-                        desc   = (f"<b>抄底仓位跌破止损线(买入价×{1-TQQQ_STOP_PCT:.0%})！</b>"
-                                  f"将于明日开盘执行卖出。<br>{vix_info} | {ma200_info}")
-
-                    elif st["today_sell"]:
-                        signal = "🚨 MA200破位：清仓"
-                        color  = "#B42318"
-                        desc   = f"<b>价格下穿MA200，趋势转坏，清仓离场。</b><br>{vix_info} | {ma200_info}"
-
-                    elif st["today_buy_vix"]:
-                        signal = f"🔥 VIX≥{TQQQ_VIX_TRIGGER}：恐慌抄底"
-                        color  = "#027A48"
-                        desc   = (f"<b>VIX触达恐慌区间，价格在MA200以下，一次性抄底机会。</b>"
-                                  f"止损线：买入价×{1-TQQQ_STOP_PCT:.0%}<br>{vix_info} | {ma200_info}")
-
-                    elif st["today_buy_ma200"]:
+                        desc   = (f"<b>价格下穿MA200，趋势转坏，清仓离场。</b>"
+                                  f"若有待投入的新增资金，继续留在无风险现金，等下一次上穿信号再一并投入。<br>{ma200_info}")
+                    elif ma_sig["today_buy"]:
                         signal = "🚀 MA200上穿：买入"
                         color  = "#027A48"
                         desc   = (f"<b>价格上穿MA200，趋势回升，建仓入场。</b>"
-                                  f"抄底资格同步重置。<br>{vix_info} | {ma200_info}")
-
-                    elif st["holding"] and st["in_panic"]:
-                        pnl    = f"{st['panic_pnl']:+.1f}%" if st["panic_pnl"] is not None else "?"
-                        sl_px  = f"{st['stop_level']:.3f}" if st["stop_level"] else "?"
-                        pnl_v  = st["panic_pnl"] or 0
-                        color  = "#B42318" if pnl_v < -7 else ("#027A48" if pnl_v > 0 else "#B8860B")
-                        signal = f"⚡ 抄底持仓中 ({pnl})"
-                        desc   = (f"持有VIX恐慌抄底仓位 | 浮盈 <b>{pnl}</b> | "
-                                  f"止损线 {sl_px} ({TQQQ_STOP_PCT:.0%})<br>{vix_info} | {ma200_info}")
-
-                    elif st["holding"]:
-                        color  = "#B8860B"
+                                  f"此前累积的待投入新增资金，本次一并买入。<br>{ma200_info}")
+                    elif ma_sig["above_ma200"]:
                         signal = "🛡️ MA200上方持仓"
-                        desc   = (f"价格在MA200上方，持仓跟牛。"
-                                  f"{'⚠️偏离较高，注意回调' if st['bias_pct'] > 60 else ''}<br>"
-                                  f"{vix_info} | {ma200_info}")
-
-                    elif not st["panic_allowed"]:
-                        signal = "💤 空仓：等MA200上穿"
-                        color  = "#667085"
-                        desc   = (f"本轮熊市抄底资格已用，须等价格上穿MA200才可再次入场。<br>"
-                                  f"{vix_info} | {ma200_info}")
-
+                        color  = "#B8860B"
+                        desc   = (f"价格在MA200上方，维持持仓。新增定投资金不直接买入，"
+                                  f"继续留在无风险现金里，等下一次'上穿买入'信号触发时才一次性投入。<br>{ma200_info}")
                     else:
-                        # 空仓 + 抄底资格可用
-                        if st["curr_vix"] >= TQQQ_VIX_TRIGGER and not st["above_ma200"]:
-                            signal = f"🔥 VIX={st['curr_vix']:.1f}≥{TQQQ_VIX_TRIGGER}（可抄底，等边沿）"
-                            color  = "#027A48"
-                            desc   = (f"VIX处于恐慌区间且价格在MA200以下，满足抄底条件，等待明日信号确认。<br>"
-                                      f"{vix_info} | {ma200_info}")
-                        else:
-                            signal = "💤 空仓等信号"
-                            color  = "#667085"
-                            desc   = (f"等待 VIX≥{TQQQ_VIX_TRIGGER} 抄底 或 MA200上穿买入。<br>"
-                                      f"{vix_info} | {ma200_info}")
+                        signal = "💤 MA200下方空仓"
+                        color  = "#667085"
+                        desc   = f"价格在MA200下方，空仓等待。新增定投资金留在无风险现金，等MA200上穿信号触发买入。<br>{ma200_info}"
 
-                model_tag = "<span style='font-size:10px;color:#667085;'>MA200+VIX35</span>"
+                html_rows += _render_action_row(tk, "MA200(触发投入)", signal, color, desc)
+
+                # ══ 行2: ADX20切换(MA200/持有) ═════════════════════
+                if not adx_sig:
+                    signal2, color2, desc2 = "数据不足", "#667085", "历史数据不够，无法计算ADX/MA200"
+                else:
+                    adx_txt  = f"{adx_sig['curr_adx']:.1f}" if not np.isnan(adx_sig["curr_adx"]) else "NA"
+                    adx_info = (f"ADX(14) <b>{adx_txt}</b>（阈值20）| MA200 <b>{adx_sig['curr_ma200']:.2f}</b> | "
+                                f"现价 <b>{adx_sig['curr_close']:.2f}</b> "
+                                f"({'上方' if adx_sig['above_ma200'] else '下方'} {abs(adx_sig['bias_pct']):.1f}%)")
+                    if adx_sig["today_sell"]:
+                        signal2 = "🚨 趋势确认下穿：卖出"
+                        color2  = "#B42318"
+                        desc2   = f"<b>ADX&gt;20确认趋势，且价格下穿MA200，卖出离场。</b><br>{adx_info}"
+                    elif adx_sig["today_buy"] and adx_sig["is_trending"]:
+                        signal2 = "🚀 趋势确认上穿：买入"
+                        color2  = "#027A48"
+                        desc2   = f"<b>ADX&gt;20确认趋势，且价格上穿MA200，买入入场。</b><br>{adx_info}"
+                    elif adx_sig["today_buy"]:
+                        signal2 = "🔄 转入震荡：恢复满仓"
+                        color2  = "#027A48"
+                        desc2   = f"ADX回落至≤20（震荡），本策略震荡日无条件满仓，恢复买入。<br>{adx_info}"
+                    elif adx_sig["is_trending"]:
+                        state_txt = "持仓" if adx_sig["holding"] else "空仓"
+                        signal2   = f"📈 趋势日跟随MA200（{state_txt}）"
+                        color2    = "#B8860B" if adx_sig["holding"] else "#667085"
+                        desc2     = f"ADX&gt;20，处于趋势确认状态，跟随MA200信号进出。<br>{adx_info}"
+                    else:
+                        signal2 = "💤 震荡日：无条件持有"
+                        color2  = "#B8860B"
+                        desc2   = f"ADX≤20，判定为震荡，不理会MA200上下方状态，维持满仓。<br>{adx_info}"
+
+                html_rows += _render_action_row(tk, "ADX20切换(MA200/持有)", signal2, color2, desc2)
+                continue
 
             else:
                 # ══ 纯 MA200（QQQ）══════════════════════════════════
@@ -432,7 +495,6 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                 curr_close  = float(close.iloc[-1])
                 curr_ma200v = float(ma200.iloc[-1]) if not ma200.empty else 0.0
                 bias_pct    = (curr_close / curr_ma200v - 1) * 100 if curr_ma200v else 0.0
-                curr_vix    = float(vix_aligned.iloc[-1])
                 ma200_info  = (f"MA200 <b>{curr_ma200v:.2f}</b> | 现价 <b>{curr_close:.2f}</b> "
                                f"({'上方' if bool(_above.iloc[-1]) else '下方'} {abs(bias_pct):.1f}%)")
 
@@ -453,18 +515,10 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                     color  = "#667085"
                     desc   = f"价格在MA200下方，等待上穿信号。<br>{ma200_info}"
 
-                model_tag = "<span style='font-size:10px;color:#667085;'>MA200</span>"
-
-            html_rows += f"""
-            <tr>
-                <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:12%;'>{tk}<br>{model_tag}</td>
-                <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:{color}; font-weight:bold; width:24%;'>{signal}</td>
-                <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#475467; font-size:12px;'>{desc}</td>
-            </tr>
-            """
+                html_rows += _render_action_row(tk, "MA200", signal, color, desc)
 
         return {
-            "title": f"🧠 核心舱交易大脑  QQQ→纯MA200 | TQQQ→MA200+VIX≥{TQQQ_VIX_TRIGGER}恐慌抄底",
+            "title": "🧠 核心舱交易大脑  QQQ→纯MA200 | TQQQ→MA200(触发投入) / ADX20切换(MA200/持有)",
             "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"
         }
     except Exception as e:
