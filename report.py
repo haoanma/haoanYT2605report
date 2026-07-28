@@ -4,14 +4,10 @@
 """
 投资监控雷达 - 极致聚焦版
 - QQQ  信号引擎：纯MA200（上穿买入，下穿卖出，无其他过滤）
-- TQQQ 信号引擎：核心舱同时展示两套独立逻辑（各占一行）
-    行1 MA200(触发投入)：核心持仓跟随纯MA200（上穿买入/下穿卖出）；
-        新增定投资金不跟随每日状态直接买入，而是先留在无风险现金里，
-        只有在"MA200上穿买入"这个触发信号出现的那一天，才把累积的
-        待投入资金一并买入。
-    行2 ADX20切换(MA200/持有)：Wilder 14周期ADX(T-1) > 20（趋势确认）
-        时跟随MA200信号（上穿买/下穿卖）；ADX(T-1) ≤ 20（震荡，含预热期）
-        时不理会MA200状态，无条件满仓持有。
+- TQQQ 信号引擎：ADX20方向切换(下行才卖)。Wilder 14周期 ADX(T-1) 判趋势、+DI/-DI(T-1) 判方向。
+    只有「跌破MA200 且 ADX(T-1)>20(趋势确认) 且 -DI(T-1)>+DI(T-1)(下行确认)」
+    才卖出空仓；其余情况（MA200上方 / 震荡 / 跌破但方向偏多）一律无条件满仓持有，
+    避免仅凭跌破MA200+趋势确认就卖在震荡或假下跌里（回测见 adx20_directional.py）。
 - 结构：核心指令 -> 宏观大盘 -> QQQ十大权重股(含PE/PS) -> 全球市场 -> 行业ETF -> 其他个股
 """
 
@@ -144,7 +140,8 @@ def _wilder_smooth(values: np.ndarray, period: int, mode: str) -> np.ndarray:
     return out
 
 
-def _wilder_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = TQQQ_ADX_PERIOD) -> pd.Series:
+def _wilder_dmi(high: pd.Series, low: pd.Series, close: pd.Series, period: int = TQQQ_ADX_PERIOD):
+    """返回 (adx, plus_di, minus_di)，与 adx20_directional.py 的 wilder_dmi 完全一致。"""
     prev_close = close.shift(1)
     prev_high  = high.shift(1)
     prev_low   = low.shift(1)
@@ -172,47 +169,21 @@ def _wilder_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int =
     minus_di = 100 * minus_s / tr_s
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
 
-    return pd.Series(_wilder_smooth(dx.to_numpy(), period, "avg"), index=close.index)
+    adx = pd.Series(_wilder_smooth(dx.to_numpy(), period, "avg"), index=close.index)
+    return adx, plus_di, minus_di
 
 
 # ==========================================
-# 🔧 TQQQ 核心舱：两套独立逻辑
+# 🔧 TQQQ 核心舱：ADX20 方向切换逻辑
 # ==========================================
-def _compute_ma200_signal(close: pd.Series) -> dict:
-    """纯 MA200：收盘上穿买入 / 下穿卖出。用于"MA200(触发投入)"行——
-    核心持仓按此信号进出；新增定投资金只在 today_buy 的那一天才和累积的
-    待投入资金一并买入，其余时间新增资金留在无风险现金里。"""
-    ma200 = close.rolling(200, min_periods=200).mean()
-    valid = ma200.dropna().index
-    if len(valid) < 2:
-        return {}
-    close_v = close.loc[valid]
-    ma200_v = ma200.loc[valid]
-
-    above  = (close_v > ma200_v).fillna(False)
-    buy_e  = above & (~above.shift(1, fill_value=above.iloc[0]))
-    sell_e = (~above) & above.shift(1, fill_value=above.iloc[0])
-
-    curr_close = float(close_v.iloc[-1])
-    curr_ma200 = float(ma200_v.iloc[-1])
-    bias_pct   = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
-
-    return {
-        "above_ma200": bool(above.iloc[-1]),
-        "today_buy":   bool(buy_e.iloc[-1]),
-        "today_sell":  bool(sell_e.iloc[-1]),
-        "curr_close":  curr_close,
-        "curr_ma200":  curr_ma200,
-        "bias_pct":    bias_pct,
-    }
-
-
 def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Series,
                                   adx_threshold: float = TQQQ_ADX_THRESHOLD) -> dict:
-    """ADX(T-1) > threshold（趋势确认）-> 跟随MA200信号（上穿买/下穿卖）
-    ADX(T-1) <= threshold（震荡，含ADX预热期）-> 不理会MA200状态，无条件满仓持有。"""
+    """方向精细化版本（原 adx20_directional.py 回测验证）：
+    跌破MA200 且 ADX(T-1)>threshold（趋势确认） 且 -DI(T-1)>+DI(T-1)（下行方向确认） -> 卖出/空仓
+    其余情况（MA200上方 / 震荡 / 跌破但方向偏多）一律无条件满仓持有，
+    避免仅凭"跌破MA200+趋势确认"就卖在震荡或假下跌里。"""
     ma200 = close.rolling(200, min_periods=200).mean()
-    adx = _wilder_adx(high, low, close, period=TQQQ_ADX_PERIOD)
+    adx, plus_di, minus_di = _wilder_dmi(high, low, close, period=TQQQ_ADX_PERIOD)
 
     valid = ma200.dropna().index
     if len(valid) < 2:
@@ -220,13 +191,19 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
     close_v = close.loc[valid]
     ma200_v = ma200.loc[valid]
     adx_v   = adx.reindex(valid)
+    pdi_v   = plus_di.reindex(valid)
+    mdi_v   = minus_di.reindex(valid)
 
     above      = (close_v > ma200_v).fillna(False)
     above_prev = above.shift(1, fill_value=above.iloc[0])
     adx_prev   = adx_v.shift(1)
+    pdi_prev   = pdi_v.shift(1)
+    mdi_prev   = mdi_v.shift(1)
     trending   = (adx_prev > adx_threshold).fillna(False)
+    downtrend  = (mdi_prev > pdi_prev).fillna(False)
 
-    holding = pd.Series(np.where(trending.to_numpy(), above_prev.to_numpy(), True), index=close_v.index)
+    sell = (~above_prev) & trending & downtrend
+    holding = ~sell
     prev_holding = holding.shift(1, fill_value=holding.iloc[0])
     buy_e  = holding & (~prev_holding)
     sell_e = (~holding) & prev_holding
@@ -234,6 +211,8 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
     curr_close = float(close_v.iloc[-1])
     curr_ma200 = float(ma200_v.iloc[-1])
     curr_adx   = float(adx_v.iloc[-1]) if pd.notna(adx_v.iloc[-1]) else float("nan")
+    curr_pdi   = float(pdi_v.iloc[-1]) if pd.notna(pdi_v.iloc[-1]) else float("nan")
+    curr_mdi   = float(mdi_v.iloc[-1]) if pd.notna(mdi_v.iloc[-1]) else float("nan")
     bias_pct   = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
 
     return {
@@ -241,8 +220,11 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
         "today_buy":   bool(buy_e.iloc[-1]),
         "today_sell":  bool(sell_e.iloc[-1]),
         "is_trending": bool(trending.iloc[-1]),
+        "is_downtrend": bool(downtrend.iloc[-1]),
         "above_ma200": bool(above.iloc[-1]),
         "curr_adx":    curr_adx,
+        "curr_pdi":    curr_pdi,
+        "curr_mdi":    curr_mdi,
         "curr_ma200":  curr_ma200,
         "curr_close":  curr_close,
         "bias_pct":    bias_pct,
@@ -305,37 +287,26 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                     strategy_hint, daily_action = "💰 空仓收息", "稳定收息"
 
                 elif t == "TQQQ":
-                    # ── 核心舱两套独立逻辑，各输出一行 ──
                     high, low = df_t["High"], df_t["Low"]
-                    ma_sig  = _compute_ma200_signal(close)
                     adx_sig = _compute_adx20_switch_signal(close, high, low)
-
-                    if not ma_sig:
-                        ma_hint, ma_action = "数据不足", "观望"
-                    elif ma_sig["today_sell"]:
-                        ma_hint, ma_action = "🚨 MA200破位卖出 | 待投入资金续留现金,等下次上穿", "卖出"
-                    elif ma_sig["today_buy"]:
-                        ma_hint, ma_action = "🚀 MA200上穿买入 | 累积待投入资金一并买入", "买入"
-                    elif ma_sig["above_ma200"]:
-                        ma_hint, ma_action = f"🛡️ MA200上方持仓 Bias={ma_sig['bias_pct']:+.1f}% | 新增资金续留现金等触发", "观望"
-                    else:
-                        ma_hint, ma_action = f"💤 MA200下方空仓 Bias={ma_sig['bias_pct']:+.1f}% | 新增资金留现金等上穿", "观望"
 
                     if not adx_sig:
                         adx_hint, adx_action = "数据不足", "观望"
                     else:
-                        adx_txt = f"ADX={adx_sig['curr_adx']:.1f}" if not np.isnan(adx_sig["curr_adx"]) else "ADX=NA"
+                        adx_txt = (f"ADX={adx_sig['curr_adx']:.1f} +DI={adx_sig['curr_pdi']:.1f}/-DI={adx_sig['curr_mdi']:.1f}"
+                                   if not np.isnan(adx_sig["curr_adx"]) else "ADX=NA")
                         if adx_sig["today_sell"]:
-                            adx_hint, adx_action = f"🚨 趋势确认下穿卖出 | {adx_txt}", "卖出"
-                        elif adx_sig["today_buy"] and adx_sig["is_trending"]:
-                            adx_hint, adx_action = f"🚀 趋势确认上穿买入 | {adx_txt}", "买入"
+                            adx_hint, adx_action = f"🚨 下行趋势确认卖出(-DI>+DI) | {adx_txt}", "卖出"
                         elif adx_sig["today_buy"]:
-                            adx_hint, adx_action = f"🔄 转入震荡恢复满仓 | {adx_txt}", "买入"
-                        elif adx_sig["is_trending"]:
-                            state_txt = "持仓中" if adx_sig["holding"] else "空仓中"
-                            adx_hint, adx_action = f"📈 趋势日跟随MA200({state_txt}) | {adx_txt}", "观望"
+                            adx_hint, adx_action = f"🔄 转入持有(方向/体制转变) | {adx_txt}", "买入"
+                        elif not adx_sig["holding"]:
+                            adx_hint, adx_action = f"⛔ 下行趋势空仓中 | {adx_txt}", "观望"
+                        elif adx_sig["above_ma200"]:
+                            adx_hint, adx_action = f"🛡️ MA200上方持有 | {adx_txt}", "观望"
+                        elif adx_sig["is_trending"] and not adx_sig["is_downtrend"]:
+                            adx_hint, adx_action = f"📈 下方趋势偏多持有(+DI>-DI) | {adx_txt}", "观望"
                         else:
-                            adx_hint, adx_action = f"💤 震荡日无条件持有 | {adx_txt}", "观望"
+                            adx_hint, adx_action = f"💤 下方震荡持有 | {adx_txt}", "观望"
 
                     ret20  = (curr / close.iloc[-21]  - 1) * 100 if len(close) > 21  else np.nan
                     ret250 = (curr / close.iloc[-251] - 1) * 100 if len(close) > 251 else np.nan
@@ -344,15 +315,13 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                         v_avg = df_t["Volume"].iloc[-21:-1].mean()
                         if v_avg and v_avg > 0: vol_ratio = _safe_float(df_t["Volume"].iloc[-1]) / v_avg
 
-                    base_row = {
+                    rows.append({
                         "Ticker": t, "Close": curr, "ChangePct": pct, "VolRatio": vol_ratio,
                         "MA20": curr_ma20, "MA50": curr_ma50, "MA200": curr_ma200,
                         "Ret20D": ret20, "Ret250D": ret250,
-                    }
-                    rows.append({**base_row, "Name": f"{ticker_map.get(t, t)}(MA200触发投入)",
-                                 "StrategyHint": ma_hint, "DailyAction": ma_action})
-                    rows.append({**base_row, "Name": f"{ticker_map.get(t, t)}(ADX20切换/MA200-持有)",
-                                 "StrategyHint": adx_hint, "DailyAction": adx_action})
+                        "Name": f"{ticker_map.get(t, t)}(ADX20方向切换/下行才卖)",
+                        "StrategyHint": adx_hint, "DailyAction": adx_action,
+                    })
                     continue
 
                 else:
@@ -423,68 +392,46 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             if tk == "TQQQ":
                 high = df_raw[tk]["High"].reindex(close.index)
                 low  = df_raw[tk]["Low"].reindex(close.index)
-                ma_sig  = _compute_ma200_signal(close)
                 adx_sig = _compute_adx20_switch_signal(close, high, low)
 
-                # ══ 行1: MA200(触发投入) ══════════════════════════
-                if not ma_sig:
-                    signal, color, desc = "数据不足", "#667085", "历史数据不够，无法计算MA200"
-                else:
-                    ma200_info = (f"MA200 <b>{ma_sig['curr_ma200']:.2f}</b> | 现价 <b>{ma_sig['curr_close']:.2f}</b> "
-                                  f"({'上方' if ma_sig['above_ma200'] else '下方'} {abs(ma_sig['bias_pct']):.1f}%)")
-                    if ma_sig["today_sell"]:
-                        signal = "🚨 MA200破位：卖出"
-                        color  = "#B42318"
-                        desc   = (f"<b>价格下穿MA200，趋势转坏，清仓离场。</b>"
-                                  f"若有待投入的新增资金，继续留在无风险现金，等下一次上穿信号再一并投入。<br>{ma200_info}")
-                    elif ma_sig["today_buy"]:
-                        signal = "🚀 MA200上穿：买入"
-                        color  = "#027A48"
-                        desc   = (f"<b>价格上穿MA200，趋势回升，建仓入场。</b>"
-                                  f"此前累积的待投入新增资金，本次一并买入。<br>{ma200_info}")
-                    elif ma_sig["above_ma200"]:
-                        signal = "🛡️ MA200上方持仓"
-                        color  = "#B8860B"
-                        desc   = (f"价格在MA200上方，维持持仓。新增定投资金不直接买入，"
-                                  f"继续留在无风险现金里，等下一次'上穿买入'信号触发时才一次性投入。<br>{ma200_info}")
-                    else:
-                        signal = "💤 MA200下方空仓"
-                        color  = "#667085"
-                        desc   = f"价格在MA200下方，空仓等待。新增定投资金留在无风险现金，等MA200上穿信号触发买入。<br>{ma200_info}"
-
-                html_rows += _render_action_row(tk, "MA200(触发投入)", signal, color, desc)
-
-                # ══ 行2: ADX20切换(MA200/持有) ═════════════════════
+                # ══ ADX20方向切换(下行才卖) ═════════════════════
                 if not adx_sig:
                     signal2, color2, desc2 = "数据不足", "#667085", "历史数据不够，无法计算ADX/MA200"
                 else:
                     adx_txt  = f"{adx_sig['curr_adx']:.1f}" if not np.isnan(adx_sig["curr_adx"]) else "NA"
-                    adx_info = (f"ADX(14) <b>{adx_txt}</b>（阈值20）| MA200 <b>{adx_sig['curr_ma200']:.2f}</b> | "
+                    dir_txt  = (f"-DI{adx_sig['curr_mdi']:.1f}>+DI{adx_sig['curr_pdi']:.1f}(下行)"
+                                if adx_sig["is_downtrend"] else
+                                f"+DI{adx_sig['curr_pdi']:.1f}>-DI{adx_sig['curr_mdi']:.1f}(偏多)")
+                    adx_info = (f"ADX(14) <b>{adx_txt}</b>（阈值20，{dir_txt}）| MA200 <b>{adx_sig['curr_ma200']:.2f}</b> | "
                                 f"现价 <b>{adx_sig['curr_close']:.2f}</b> "
                                 f"({'上方' if adx_sig['above_ma200'] else '下方'} {abs(adx_sig['bias_pct']):.1f}%)")
                     if adx_sig["today_sell"]:
-                        signal2 = "🚨 趋势确认下穿：卖出"
+                        signal2 = "🚨 下行趋势确认：卖出"
                         color2  = "#B42318"
-                        desc2   = f"<b>ADX&gt;20确认趋势，且价格下穿MA200，卖出离场。</b><br>{adx_info}"
-                    elif adx_sig["today_buy"] and adx_sig["is_trending"]:
-                        signal2 = "🚀 趋势确认上穿：买入"
-                        color2  = "#027A48"
-                        desc2   = f"<b>ADX&gt;20确认趋势，且价格上穿MA200，买入入场。</b><br>{adx_info}"
+                        desc2   = (f"<b>价格跌破MA200，且ADX&gt;20确认趋势、-DI&gt;+DI确认方向向下，卖出离场。</b>"
+                                   f"（震荡或方向偏多时不会卖）<br>{adx_info}")
                     elif adx_sig["today_buy"]:
-                        signal2 = "🔄 转入震荡：恢复满仓"
+                        signal2 = "🔄 转入持有：买入"
                         color2  = "#027A48"
-                        desc2   = f"ADX回落至≤20（震荡），本策略震荡日无条件满仓，恢复买入。<br>{adx_info}"
-                    elif adx_sig["is_trending"]:
-                        state_txt = "持仓" if adx_sig["holding"] else "空仓"
-                        signal2   = f"📈 趋势日跟随MA200（{state_txt}）"
-                        color2    = "#B8860B" if adx_sig["holding"] else "#667085"
-                        desc2     = f"ADX&gt;20，处于趋势确认状态，跟随MA200信号进出。<br>{adx_info}"
-                    else:
-                        signal2 = "💤 震荡日：无条件持有"
+                        desc2   = f"MA200回到上方，或震荡/方向转多导致「下行确认」条件解除，恢复满仓买入。<br>{adx_info}"
+                    elif not adx_sig["holding"]:
+                        signal2 = "⛔ 下行趋势：空仓中"
+                        color2  = "#667085"
+                        desc2   = f"仍处于「跌破MA200+趋势确认+下行确认」的卖出状态，继续空仓等待。<br>{adx_info}"
+                    elif adx_sig["above_ma200"]:
+                        signal2 = "🛡️ MA200上方持有"
                         color2  = "#B8860B"
-                        desc2   = f"ADX≤20，判定为震荡，不理会MA200上下方状态，维持满仓。<br>{adx_info}"
+                        desc2   = f"价格在MA200上方，维持满仓。<br>{adx_info}"
+                    elif adx_sig["is_trending"] and not adx_sig["is_downtrend"]:
+                        signal2 = "📈 下方趋势偏多：持有"
+                        color2  = "#B8860B"
+                        desc2   = f"ADX&gt;20确认趋势，但+DI&gt;-DI方向偏多（非下行确认），继续满仓持有。<br>{adx_info}"
+                    else:
+                        signal2 = "💤 下方震荡：持有"
+                        color2  = "#B8860B"
+                        desc2   = f"ADX≤20（含预热期），判定为震荡，不理会MA200下方状态，维持满仓。<br>{adx_info}"
 
-                html_rows += _render_action_row(tk, "ADX20切换(MA200/持有)", signal2, color2, desc2)
+                html_rows += _render_action_row(tk, "ADX20方向切换(下行才卖)", signal2, color2, desc2)
                 continue
 
             else:
@@ -518,7 +465,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                 html_rows += _render_action_row(tk, "MA200", signal, color, desc)
 
         return {
-            "title": "🧠 核心舱交易大脑  QQQ→纯MA200 | TQQQ→MA200(触发投入) / ADX20切换(MA200/持有)",
+            "title": "🧠 核心舱交易大脑  QQQ→纯MA200 | TQQQ→ADX20方向切换(下行才卖)",
             "html_table": f"<table style='width:100%; border-collapse:collapse; text-align:left;'>{html_rows}</table>"
         }
     except Exception as e:
