@@ -215,6 +215,13 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
     curr_mdi   = float(mdi_v.iloc[-1]) if pd.notna(mdi_v.iloc[-1]) else float("nan")
     bias_pct   = (curr_close / curr_ma200 - 1) * 100 if curr_ma200 else 0.0
 
+    # 当天(T)口径的方向/趋势，用于显示，避免与 T-1 判定值混用
+    curr_is_downtrend = bool(curr_mdi > curr_pdi) if not (np.isnan(curr_mdi) or np.isnan(curr_pdi)) else False
+    curr_is_trending  = bool(curr_adx > adx_threshold) if not np.isnan(curr_adx) else False
+    # 卖出信号「今日收盘刚形成、尚未执行」：当前已跌破MA200 + ADX>阈值 + -DI>+DI，但因 T-1→T 开盘执行仍在持仓
+    pending_sell = bool((not bool(above.iloc[-1])) and curr_is_trending and curr_is_downtrend
+                        and bool(holding.iloc[-1]) and not bool(sell_e.iloc[-1]))
+
     return {
         "holding":     bool(holding.iloc[-1]),
         "today_buy":   bool(buy_e.iloc[-1]),
@@ -222,6 +229,9 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
         "is_trending": bool(trending.iloc[-1]),
         "is_downtrend": bool(downtrend.iloc[-1]),
         "above_ma200": bool(above.iloc[-1]),
+        "curr_is_downtrend": curr_is_downtrend,
+        "curr_is_trending":  curr_is_trending,
+        "pending_sell":      pending_sell,
         "curr_adx":    curr_adx,
         "curr_pdi":    curr_pdi,
         "curr_mdi":    curr_mdi,
@@ -303,7 +313,9 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                             adx_hint, adx_action = f"⛔ 下行趋势空仓中 | {adx_txt}", "观望"
                         elif adx_sig["above_ma200"]:
                             adx_hint, adx_action = f"🛡️ MA200上方持有 | {adx_txt}", "观望"
-                        elif adx_sig["is_trending"] and not adx_sig["is_downtrend"]:
+                        elif adx_sig["pending_sell"]:
+                            adx_hint, adx_action = f"🚨 卖出信号已形成，下一开盘执行 | {adx_txt}", "明日卖出"
+                        elif adx_sig["curr_is_trending"] and not adx_sig["curr_is_downtrend"]:
                             adx_hint, adx_action = f"📈 下方趋势偏多持有(+DI>-DI) | {adx_txt}", "观望"
                         else:
                             adx_hint, adx_action = f"💤 下方震荡持有 | {adx_txt}", "观望"
@@ -400,7 +412,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                 else:
                     adx_txt  = f"{adx_sig['curr_adx']:.1f}" if not np.isnan(adx_sig["curr_adx"]) else "NA"
                     dir_txt  = (f"-DI{adx_sig['curr_mdi']:.1f}>+DI{adx_sig['curr_pdi']:.1f}(下行)"
-                                if adx_sig["is_downtrend"] else
+                                if adx_sig["curr_is_downtrend"] else
                                 f"+DI{adx_sig['curr_pdi']:.1f}>-DI{adx_sig['curr_mdi']:.1f}(偏多)")
                     adx_info = (f"ADX(14) <b>{adx_txt}</b>（阈值20，{dir_txt}）| MA200 <b>{adx_sig['curr_ma200']:.2f}</b> | "
                                 f"现价 <b>{adx_sig['curr_close']:.2f}</b> "
@@ -422,14 +434,19 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                         signal2 = "🛡️ MA200上方持有"
                         color2  = "#B8860B"
                         desc2   = f"价格在MA200上方，维持满仓。<br>{adx_info}"
-                    elif adx_sig["is_trending"] and not adx_sig["is_downtrend"]:
+                    elif adx_sig["pending_sell"]:
+                        signal2 = "🚨 卖出信号已形成：下一开盘执行"
+                        color2  = "#B42318"
+                        desc2   = (f"<b>今日收盘价跌破MA200，且ADX&gt;20、-DI&gt;+DI下行确认，卖出信号已形成。</b>"
+                                   f"按 T-1 信号→T 开盘执行规则，将在下一交易日开盘卖出离场（今日仍记为持仓）。<br>{adx_info}")
+                    elif adx_sig["curr_is_trending"] and not adx_sig["curr_is_downtrend"]:
                         signal2 = "📈 下方趋势偏多：持有"
                         color2  = "#B8860B"
                         desc2   = f"ADX&gt;20确认趋势，但+DI&gt;-DI方向偏多（非下行确认），继续满仓持有。<br>{adx_info}"
                     else:
                         signal2 = "💤 下方震荡：持有"
                         color2  = "#B8860B"
-                        desc2   = f"ADX≤20（含预热期），判定为震荡，不理会MA200下方状态，维持满仓。<br>{adx_info}"
+                        desc2   = f"方向未确认或ADX偏低（震荡/假跌破/预热期），维持满仓。<br>{adx_info}"
 
                 html_rows += _render_action_row(tk, "ADX20方向切换(下行才卖)", signal2, color2, desc2)
                 continue
