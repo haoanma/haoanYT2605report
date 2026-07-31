@@ -218,20 +218,39 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
     # 当天(T)口径的方向/趋势，用于显示，避免与 T-1 判定值混用
     curr_is_downtrend = bool(curr_mdi > curr_pdi) if not (np.isnan(curr_mdi) or np.isnan(curr_pdi)) else False
     curr_is_trending  = bool(curr_adx > adx_threshold) if not np.isnan(curr_adx) else False
-    # 卖出信号「今日收盘刚形成、尚未执行」：当前已跌破MA200 + ADX>阈值 + -DI>+DI，但因 T-1→T 开盘执行仍在持仓
-    pending_sell = bool((not bool(above.iloc[-1])) and curr_is_trending and curr_is_downtrend
-                        and bool(holding.iloc[-1]) and not bool(sell_e.iloc[-1]))
+    curr_above = bool(above.iloc[-1])
+    holding_now = bool(holding.iloc[-1])  # 今日开盘按T-1信号执行完之后，当前实际仓位
+
+    # 用"今天"自己的收盘数据当作明天的T-1，反推明天开盘会执行什么操作
+    would_sell_next = (not curr_above) and curr_is_trending and curr_is_downtrend
+
+    # 卖出信号「今日收盘刚形成、尚未执行」：当前持仓，但今日数据已满足卖出三条件 -> 明日开盘卖出
+    pending_sell = bool(holding_now and would_sell_next)
+    # 买入信号「今日收盘刚形成、尚未执行」：当前空仓，但今日数据已不再满足卖出三条件(收回MA200/ADX转弱/方向转多)
+    # -> 明日开盘买入。这正是此前缺失的一半：例如今日按昨日信号卖出，但今日收盘已收复MA200，
+    # 此时不该只显示"已卖出"，还要提示"明日将买回"。
+    pending_buy = bool((not holding_now) and (not would_sell_next))
+
+    if holding_now:
+        next_action = "SELL" if would_sell_next else "HOLD"
+    else:
+        next_action = "HOLD_CASH" if would_sell_next else "BUY"
+
+    executed_today = "SELL" if bool(sell_e.iloc[-1]) else ("BUY" if bool(buy_e.iloc[-1]) else "NONE")
 
     return {
-        "holding":     bool(holding.iloc[-1]),
+        "holding":     holding_now,
         "today_buy":   bool(buy_e.iloc[-1]),
         "today_sell":  bool(sell_e.iloc[-1]),
+        "executed_today": executed_today,
         "is_trending": bool(trending.iloc[-1]),
         "is_downtrend": bool(downtrend.iloc[-1]),
-        "above_ma200": bool(above.iloc[-1]),
+        "above_ma200": curr_above,
         "curr_is_downtrend": curr_is_downtrend,
         "curr_is_trending":  curr_is_trending,
         "pending_sell":      pending_sell,
+        "pending_buy":       pending_buy,
+        "next_action":       next_action,
         "curr_adx":    curr_adx,
         "curr_pdi":    curr_pdi,
         "curr_mdi":    curr_mdi,
@@ -305,7 +324,13 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                     else:
                         adx_txt = (f"ADX={adx_sig['curr_adx']:.1f} +DI={adx_sig['curr_pdi']:.1f}/-DI={adx_sig['curr_mdi']:.1f}"
                                    if not np.isnan(adx_sig["curr_adx"]) else "ADX=NA")
-                        if adx_sig["today_sell"]:
+                        # 优先展示"下一交易日该怎么做"(用今日收盘数据推演)，而不是只报"今日已执行什么"
+                        if adx_sig["pending_buy"]:
+                            prefix = "今日已按信号卖出，但" if adx_sig["today_sell"] else ""
+                            adx_hint, adx_action = f"🔄 {prefix}收盘已转多/收复条件，买入信号已形成，下一开盘执行 | {adx_txt}", "明日买入"
+                        elif adx_sig["pending_sell"]:
+                            adx_hint, adx_action = f"🚨 卖出信号已形成，下一开盘执行 | {adx_txt}", "明日卖出"
+                        elif adx_sig["today_sell"]:
                             adx_hint, adx_action = f"🚨 下行趋势确认卖出(-DI>+DI) | {adx_txt}", "卖出"
                         elif adx_sig["today_buy"]:
                             adx_hint, adx_action = f"🔄 转入持有(方向/体制转变) | {adx_txt}", "买入"
@@ -313,8 +338,6 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
                             adx_hint, adx_action = f"⛔ 下行趋势空仓中 | {adx_txt}", "观望"
                         elif adx_sig["above_ma200"]:
                             adx_hint, adx_action = f"🛡️ MA200上方持有 | {adx_txt}", "观望"
-                        elif adx_sig["pending_sell"]:
-                            adx_hint, adx_action = f"🚨 卖出信号已形成，下一开盘执行 | {adx_txt}", "明日卖出"
                         elif adx_sig["curr_is_trending"] and not adx_sig["curr_is_downtrend"]:
                             adx_hint, adx_action = f"📈 下方趋势偏多持有(+DI>-DI) | {adx_txt}", "观望"
                         else:
@@ -417,7 +440,21 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                     adx_info = (f"ADX(14) <b>{adx_txt}</b>（阈值20，{dir_txt}）| MA200 <b>{adx_sig['curr_ma200']:.2f}</b> | "
                                 f"现价 <b>{adx_sig['curr_close']:.2f}</b> "
                                 f"({'上方' if adx_sig['above_ma200'] else '下方'} {abs(adx_sig['bias_pct']):.1f}%)")
-                    if adx_sig["today_sell"]:
+                    # 优先展示"下一交易日该怎么做"(用今日收盘数据推演)，而不是只报"今日已执行什么"——
+                    # 例如今日按昨日信号卖出，但今日收盘已收复MA200/方向转多，不能只说"已卖出"，
+                    # 还要提示"买入信号已形成，明日开盘买回"。
+                    if adx_sig["pending_buy"]:
+                        signal2 = "🔄 买入信号已形成：下一开盘执行"
+                        color2  = "#027A48"
+                        sold_note = ("<b>今日已按昨日信号卖出离场，但今日收盘MA200/ADX/方向条件已重新满足持有——</b>"
+                                     if adx_sig["today_sell"] else "<b>今日收盘MA200/ADX/方向条件已重新满足持有条件——</b>")
+                        desc2   = (f"{sold_note}买入信号已形成，将在下一交易日开盘买回。<br>{adx_info}")
+                    elif adx_sig["pending_sell"]:
+                        signal2 = "🚨 卖出信号已形成：下一开盘执行"
+                        color2  = "#B42318"
+                        desc2   = (f"<b>今日收盘价跌破MA200，且ADX&gt;20、-DI&gt;+DI下行确认，卖出信号已形成。</b>"
+                                   f"按 T-1 信号→T 开盘执行规则，将在下一交易日开盘卖出离场（今日仍记为持仓）。<br>{adx_info}")
+                    elif adx_sig["today_sell"]:
                         signal2 = "🚨 下行趋势确认：卖出"
                         color2  = "#B42318"
                         desc2   = (f"<b>价格跌破MA200，且ADX&gt;20确认趋势、-DI&gt;+DI确认方向向下，卖出离场。</b>"
@@ -434,11 +471,6 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
                         signal2 = "🛡️ MA200上方持有"
                         color2  = "#B8860B"
                         desc2   = f"价格在MA200上方，维持满仓。<br>{adx_info}"
-                    elif adx_sig["pending_sell"]:
-                        signal2 = "🚨 卖出信号已形成：下一开盘执行"
-                        color2  = "#B42318"
-                        desc2   = (f"<b>今日收盘价跌破MA200，且ADX&gt;20、-DI&gt;+DI下行确认，卖出信号已形成。</b>"
-                                   f"按 T-1 信号→T 开盘执行规则，将在下一交易日开盘卖出离场（今日仍记为持仓）。<br>{adx_info}")
                     elif adx_sig["curr_is_trending"] and not adx_sig["curr_is_downtrend"]:
                         signal2 = "📈 下方趋势偏多：持有"
                         color2  = "#B8860B"
