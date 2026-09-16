@@ -1,0 +1,894 @@
+
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>每日投资监控雷达 - 2026-09-16</title>
+<style>
+  :root{ --fg:#111827; --muted:#667085; --border:#E4E7EC; --head:#F9FAFB; --stripe:#F9FAFB; }
+  body{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size: 14px; line-height: 1.4; color:var(--fg); margin:0; padding:12px; background:#F2F4F7;}
+  .wrap{ max-width: 850px; margin:0 auto; background:#fff; border-radius:12px; padding:16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);}
+  h1{ margin:0 0 4px; font-size: 20px; color:#101828; }
+  .meta{ color:var(--muted); font-size: 12px; margin-bottom: 12px;}
+  .card{ border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow:hidden;}
+  .card h2{ margin: 0; padding: 10px 12px; font-size: 15px; background: var(--head); border-bottom: 1px solid var(--border); color: #344054; }
+  .table-wrap { overflow-x: auto; }
+  table{ width:100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+  th, td{ border-bottom: 1px solid var(--border); padding: 8px 12px; text-align: right; }
+  th{ background: #fff; text-align: right; font-weight: 600; color:#475467; }
+  td:nth-child(1), th:nth-child(1), td:nth-child(2), th:nth-child(2){ text-align: left; }
+  tbody tr:hover{ background: var(--stripe); }
+  .pos{ color:#027A48; font-weight: 600; }
+  .neg{ color:#B42318; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>每日投资监控雷达</h1>
+  <div class="meta">2026-09-16 | yfinance 驱动</div>
+  
+    <div class="card">
+      <h2>🧠 核心舱交易大脑  QQQ→纯MA200 | TQQQ→ADX20方向切换(下行才卖)</h2>
+      <div class="table-wrap"><table style='width:100%; border-collapse:collapse; text-align:left;'>
+    <tr>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:12%;'>QQQ<br><span style='font-size:10px;color:#667085;'>MA200</span></td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#B8860B; font-weight:bold; width:24%;'>🛡️ MA200上方持仓</td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#475467; font-size:12px;'>价格在MA200上方，持仓跟牛。<br>MA200 <b>660.66</b> | 现价 <b>709.18</b> (上方 7.3%)</td>
+    </tr>
+    
+    <tr>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; font-size:14px; font-weight:900; width:12%;'>TQQQ<br><span style='font-size:10px;color:#667085;'>ADX20方向切换(下行才卖)</span></td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#B8860B; font-weight:bold; width:24%;'>🛡️ MA200上方持有</td>
+        <td style='padding:12px; border-bottom:1px solid #E4E7EC; color:#475467; font-size:12px;'>价格在MA200上方，维持满仓。<br>ADX(14) <b>10.4</b>（阈值20，-DI33.1>+DI23.2(下行)）| MA200 <b>62.05</b> | 现价 <b>69.27</b> (上方 11.6%)</td>
+    </tr>
+    </table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🎯 核心资产状态</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA20</th>
+      <th>MA50</th>
+      <th>MA200</th>
+      <th>策略状态</th>
+      <th>趋势</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0-3月美债ETF(空仓避险理财)</td>
+      <td>SGOV</td>
+      <td>100.53</td>
+      <td><span class="pos">0.01</span></td>
+      <td><span class="neg">-0.03</span></td>
+      <td>0.00</td>
+      <td>100.56</td>
+      <td>100.55</td>
+      <td>100.52</td>
+      <td><span class="neg" style="opacity:0.8">💰 空仓收息</span></td>
+      <td>强</td>
+    </tr>
+    <tr>
+      <td>纳斯达克100ETF(底层资产)</td>
+      <td>QQQ</td>
+      <td>709.18</td>
+      <td><span class="neg">-0.80</span></td>
+      <td><span class="neg">-2.99</span></td>
+      <td><span class="pos">19.86</span></td>
+      <td>714.57</td>
+      <td>710.34</td>
+      <td>660.66</td>
+      <td><span class="pos" style="opacity:0.8">🛡️ MA200上方持仓 +7.3%</span></td>
+      <td>强</td>
+    </tr>
+    <tr>
+      <td>纳斯达克三倍做多(核心进攻)(ADX20方向切换/下行才卖)</td>
+      <td>TQQQ</td>
+      <td>69.27</td>
+      <td><span class="neg">-2.41</span></td>
+      <td><span class="neg">-9.79</span></td>
+      <td><span class="pos">39.62</span></td>
+      <td>71.29</td>
+      <td>70.97</td>
+      <td>62.05</td>
+      <td><span style="color:var(--muted)">🛡️ MA200上方持有 | ADX=10.4 +DI=23.2/-DI=33.1</span></td>
+      <td>强</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🇺🇸 美国宏观大盘 & 风险锚</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA20</th>
+      <th>MA200</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>恐慌指数VIX(情绪开关)</td>
+      <td>^VIX</td>
+      <td>17.20</td>
+      <td><span class="pos">0.58</span></td>
+      <td><span class="pos">8.59</span></td>
+      <td><span class="pos">9.55</span></td>
+      <td>15.61</td>
+      <td>18.10</td>
+    </tr>
+    <tr>
+      <td>美元指数ETF(全球流动性抽水机)</td>
+      <td>UUP</td>
+      <td>28.17</td>
+      <td><span class="pos">0.36</span></td>
+      <td><span class="pos">0.21</span></td>
+      <td><span class="pos">3.19</span></td>
+      <td>28.04</td>
+      <td>27.72</td>
+    </tr>
+    <tr>
+      <td>20年期以上国债ETF(衰退预期)</td>
+      <td>TLT</td>
+      <td>80.93</td>
+      <td><span class="pos">0.07</span></td>
+      <td><span class="neg">-1.35</span></td>
+      <td><span class="neg">-10.24</span></td>
+      <td>82.14</td>
+      <td>86.05</td>
+    </tr>
+    <tr>
+      <td>通胀保值债券ETF(实际利率锚)</td>
+      <td>TIP</td>
+      <td>105.82</td>
+      <td><span class="neg">-0.02</span></td>
+      <td><span class="neg">-1.09</span></td>
+      <td><span class="neg">-5.33</span></td>
+      <td>106.95</td>
+      <td>109.74</td>
+    </tr>
+    <tr>
+      <td>1-3年期国债ETF(短期利率锚)</td>
+      <td>SHY</td>
+      <td>81.34</td>
+      <td><span class="neg">-0.04</span></td>
+      <td><span class="neg">-0.80</span></td>
+      <td><span class="neg">-1.95</span></td>
+      <td>81.80</td>
+      <td>82.38</td>
+    </tr>
+    <tr>
+      <td>高收益公司债ETF(信用利差预警)</td>
+      <td>HYG</td>
+      <td>78.53</td>
+      <td><span class="neg">-0.09</span></td>
+      <td><span class="neg">-1.48</span></td>
+      <td><span class="neg">-3.28</span></td>
+      <td>79.37</td>
+      <td>80.08</td>
+    </tr>
+    <tr>
+      <td>标普500指数(美股基准)</td>
+      <td>^GSPC</td>
+      <td>7585.73</td>
+      <td><span class="neg">-0.45</span></td>
+      <td><span class="neg">-2.06</span></td>
+      <td><span class="pos">14.82</span></td>
+      <td>7668.93</td>
+      <td>7171.23</td>
+    </tr>
+    <tr>
+      <td>罗素2000指数(美国中小盘)</td>
+      <td>^RUT</td>
+      <td>2870.29</td>
+      <td><span class="neg">-0.76</span></td>
+      <td><span class="neg">-6.12</span></td>
+      <td><span class="pos">19.44</span></td>
+      <td>2963.57</td>
+      <td>2760.71</td>
+    </tr>
+    <tr>
+      <td>铜矿ETF(宏观经济铜博士)</td>
+      <td>CPER</td>
+      <td>38.26</td>
+      <td><span class="neg">-2.35</span></td>
+      <td><span class="neg">-4.37</span></td>
+      <td><span class="pos">31.79</span></td>
+      <td>39.76</td>
+      <td>36.94</td>
+    </tr>
+    <tr>
+      <td>比特币(全球流动性水位计)</td>
+      <td>BTC-USD</td>
+      <td>75551.01</td>
+      <td><span class="neg">-3.34</span></td>
+      <td><span class="neg">-4.40</span></td>
+      <td><span class="neg">-17.00</span></td>
+      <td>78287.52</td>
+      <td>70237.42</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🚀 QQQ 权重前十大股票 (估值透视)</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>市销率(P/S)</th>
+      <th>历史P/E</th>
+      <th>远期P/E</th>
+      <th>MA20</th>
+      <th>MA200</th>
+      <th>年涨幅(%)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>英伟达</td>
+      <td>NVDA</td>
+      <td>210.96</td>
+      <td><span class="neg">-3.36</span></td>
+      <td>16.9x</td>
+      <td>26.82x</td>
+      <td>13.59x</td>
+      <td>219.45</td>
+      <td>197.61</td>
+      <td><span class="pos">18.68</span></td>
+    </tr>
+    <tr>
+      <td>苹果</td>
+      <td>AAPL</td>
+      <td>333.08</td>
+      <td><span class="pos">0.24</span></td>
+      <td>10.4x</td>
+      <td>37.95x</td>
+      <td>34.58x</td>
+      <td>317.98</td>
+      <td>285.24</td>
+      <td><span class="pos">40.72</span></td>
+    </tr>
+    <tr>
+      <td>微软</td>
+      <td>MSFT</td>
+      <td>505.41</td>
+      <td><span class="pos">1.97</span></td>
+      <td>11.1x</td>
+      <td>27.71x</td>
+      <td>21.07x</td>
+      <td>494.93</td>
+      <td>431.41</td>
+      <td><span class="neg">-1.93</span></td>
+    </tr>
+    <tr>
+      <td>亚马逊</td>
+      <td>AMZN</td>
+      <td>253.54</td>
+      <td><span class="neg">-1.26</span></td>
+      <td>3.5x</td>
+      <td>20.00x</td>
+      <td>23.89x</td>
+      <td>258.50</td>
+      <td>239.93</td>
+      <td><span class="pos">9.55</span></td>
+    </tr>
+    <tr>
+      <td>Meta(脸书)</td>
+      <td>META</td>
+      <td>665.60</td>
+      <td><span class="pos">2.71</span></td>
+      <td>7.5x</td>
+      <td>25.23x</td>
+      <td>19.17x</td>
+      <td>590.25</td>
+      <td>623.49</td>
+      <td><span class="neg">-12.96</span></td>
+    </tr>
+    <tr>
+      <td>博通</td>
+      <td>AVGO</td>
+      <td>344.72</td>
+      <td><span class="neg">-4.77</span></td>
+      <td>18.2x</td>
+      <td>43.33x</td>
+      <td>17.50x</td>
+      <td>365.08</td>
+      <td>370.04</td>
+      <td><span class="neg">-5.32</span></td>
+    </tr>
+    <tr>
+      <td>谷歌(A类)</td>
+      <td>GOOGL</td>
+      <td>349.39</td>
+      <td><span class="pos">3.22</span></td>
+      <td>9.5x</td>
+      <td>17.32x</td>
+      <td>23.22x</td>
+      <td>341.23</td>
+      <td>336.96</td>
+      <td><span class="pos">38.86</span></td>
+    </tr>
+    <tr>
+      <td>谷歌(C类)</td>
+      <td>GOOG</td>
+      <td>345.71</td>
+      <td><span class="pos">3.06</span></td>
+      <td>9.4x</td>
+      <td>17.15x</td>
+      <td>22.98x</td>
+      <td>338.15</td>
+      <td>335.73</td>
+      <td><span class="pos">37.32</span></td>
+    </tr>
+    <tr>
+      <td>特斯拉</td>
+      <td>TSLA</td>
+      <td>358.97</td>
+      <td><span class="neg">-1.77</span></td>
+      <td>13.6x</td>
+      <td>330.17x</td>
+      <td>165.19x</td>
+      <td>355.96</td>
+      <td>398.63</td>
+      <td><span class="neg">-12.45</span></td>
+    </tr>
+    <tr>
+      <td>好市多</td>
+      <td>COST</td>
+      <td>918.91</td>
+      <td><span class="pos">1.56</span></td>
+      <td>1.4x</td>
+      <td>45.41x</td>
+      <td>39.83x</td>
+      <td>935.65</td>
+      <td>960.64</td>
+      <td><span class="neg">-4.29</span></td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🌏 亚洲市场横向对比</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA200</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>恒生指数(离岸中国资产)</td>
+      <td>^HSI</td>
+      <td>24917.60</td>
+      <td><span class="pos">0.45</span></td>
+      <td><span class="neg">-2.10</span></td>
+      <td><span class="neg">-1.97</span></td>
+      <td>25621.40</td>
+    </tr>
+    <tr>
+      <td>印度SENSEX指数(新兴大国动量)</td>
+      <td>^BSESN</td>
+      <td>74781.76</td>
+      <td><span class="neg">-0.16</span></td>
+      <td><span class="neg">-4.14</span></td>
+      <td><span class="neg">-7.43</span></td>
+      <td>79115.81</td>
+    </tr>
+    <tr>
+      <td>日经225指数(亚洲避险/套息资金池)</td>
+      <td>^N225</td>
+      <td>63492.99</td>
+      <td><span class="neg">-0.81</span></td>
+      <td><span class="neg">-8.27</span></td>
+      <td><span class="pos">51.39</span></td>
+      <td>59416.05</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🇪🇺 欧洲及其他市场</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA200</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>原油ETF(大宗商品/通胀源头)</td>
+      <td>USO</td>
+      <td>156.66</td>
+      <td><span class="pos">1.14</span></td>
+      <td><span class="pos">23.74</span></td>
+      <td><span class="pos">111.05</span></td>
+      <td>109.55</td>
+    </tr>
+    <tr>
+      <td>英国富时100(老牌资本市场)</td>
+      <td>^FTSE</td>
+      <td>10697.60</td>
+      <td><span class="pos">0.44</span></td>
+      <td><span class="neg">-0.49</span></td>
+      <td><span class="pos">16.17</span></td>
+      <td>10388.00</td>
+    </tr>
+    <tr>
+      <td>澳大利亚ASX200指数(全球资源与矿产大国)</td>
+      <td>^AXJO</td>
+      <td>8749.90</td>
+      <td><span class="pos">0.10</span></td>
+      <td><span class="neg">-3.56</span></td>
+      <td><span class="pos">0.05</span></td>
+      <td>8819.08</td>
+    </tr>
+    <tr>
+      <td>德国DAX指数(欧洲工业引擎)</td>
+      <td>^GDAXI</td>
+      <td>25440.81</td>
+      <td><span class="neg">-0.50</span></td>
+      <td><span class="neg">-3.41</span></td>
+      <td><span class="pos">8.91</span></td>
+      <td>24736.22</td>
+    </tr>
+    <tr>
+      <td>台湾加权指数(全球半导体制造阵列)</td>
+      <td>^TWII</td>
+      <td>45862.52</td>
+      <td><span class="neg">-0.70</span></td>
+      <td><span class="pos">0.01</span></td>
+      <td><span class="pos">90.96</span></td>
+      <td>37814.22</td>
+    </tr>
+    <tr>
+      <td>法国CAC40指数(欧洲奢侈品与消费)</td>
+      <td>^FCHI</td>
+      <td>8117.78</td>
+      <td><span class="neg">-0.76</span></td>
+      <td><span class="neg">-5.38</span></td>
+      <td><span class="pos">3.36</span></td>
+      <td>8240.35</td>
+    </tr>
+    <tr>
+      <td>欧洲斯托克50(欧洲经济基准)</td>
+      <td>^STOXX50E</td>
+      <td>6260.38</td>
+      <td><span class="neg">-1.02</span></td>
+      <td><span class="neg">-4.14</span></td>
+      <td><span class="pos">16.13</span></td>
+      <td>6035.26</td>
+    </tr>
+    <tr>
+      <td>黄金ETF(抗通胀/地缘避险底座)</td>
+      <td>GLD</td>
+      <td>392.84</td>
+      <td><span class="neg">-1.49</span></td>
+      <td><span class="neg">-2.15</span></td>
+      <td><span class="pos">15.91</span></td>
+      <td>416.00</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>📊 行业与主题 ETF</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA20</th>
+      <th>MA200</th>
+      <th>量比</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>医疗保健ETF(防御与老龄化)</td>
+      <td>XLV</td>
+      <td>167.75</td>
+      <td><span class="pos">1.45</span></td>
+      <td><span class="pos">0.23</span></td>
+      <td><span class="pos">22.51</span></td>
+      <td>170.90</td>
+      <td>155.71</td>
+      <td>1.23</td>
+    </tr>
+    <tr>
+      <td>金融ETF(信贷与宏观周期)</td>
+      <td>XLF</td>
+      <td>57.03</td>
+      <td><span class="neg">-0.38</span></td>
+      <td><span class="neg">-1.94</span></td>
+      <td><span class="pos">6.24</span></td>
+      <td>57.64</td>
+      <td>53.63</td>
+      <td>1.29</td>
+    </tr>
+    <tr>
+      <td>能源ETF(传统能源与抗通胀)</td>
+      <td>XLE</td>
+      <td>64.53</td>
+      <td><span class="neg">-0.94</span></td>
+      <td><span class="pos">4.23</span></td>
+      <td><span class="pos">46.16</span></td>
+      <td>63.85</td>
+      <td>55.33</td>
+      <td>1.76</td>
+    </tr>
+    <tr>
+      <td>公用事业ETF(AI电力基建与防御收息)</td>
+      <td>XLU</td>
+      <td>41.82</td>
+      <td><span class="neg">-1.34</span></td>
+      <td><span class="neg">-5.62</span></td>
+      <td><span class="neg">-2.40</span></td>
+      <td>43.07</td>
+      <td>44.62</td>
+      <td>1.19</td>
+    </tr>
+    <tr>
+      <td>半导体ETF(AI革命铲子股)</td>
+      <td>SOXX</td>
+      <td>497.40</td>
+      <td><span class="neg">-5.63</span></td>
+      <td><span class="neg">-9.63</span></td>
+      <td><span class="pos">92.94</span></td>
+      <td>517.97</td>
+      <td>437.64</td>
+      <td>1.60</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+    <div class="card">
+      <h2>🏢 其他重点个股</h2>
+      <div class="table-wrap"><table class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>名称</th>
+      <th>代码</th>
+      <th>收盘价</th>
+      <th>日涨幅(%)</th>
+      <th>月涨幅(%)</th>
+      <th>年涨幅(%)</th>
+      <th>MA20</th>
+      <th>MA200</th>
+      <th>量比</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>礼来(GLP-1减肥药龙头)</td>
+      <td>LLY</td>
+      <td>1138.28</td>
+      <td><span class="pos">2.02</span></td>
+      <td><span class="neg">-3.55</span></td>
+      <td><span class="pos">52.14</span></td>
+      <td>1181.03</td>
+      <td>1065.19</td>
+      <td>0.86</td>
+    </tr>
+    <tr>
+      <td>腾讯控股(中国社交与游戏霸主)</td>
+      <td>0700.HK</td>
+      <td>438.80</td>
+      <td><span class="pos">1.90</span></td>
+      <td><span class="neg">-0.81</span></td>
+      <td><span class="neg">-28.94</span></td>
+      <td>441.28</td>
+      <td>509.76</td>
+      <td>1.17</td>
+    </tr>
+    <tr>
+      <td>阿里巴巴-SW(中国电商与云)</td>
+      <td>9988.HK</td>
+      <td>107.20</td>
+      <td><span class="pos">1.23</span></td>
+      <td><span class="neg">-15.39</span></td>
+      <td><span class="neg">-21.92</span></td>
+      <td>112.73</td>
+      <td>131.36</td>
+      <td>0.49</td>
+    </tr>
+    <tr>
+      <td>联合健康(美国医保巨头)</td>
+      <td>UNH</td>
+      <td>383.55</td>
+      <td><span class="pos">1.18</span></td>
+      <td><span class="neg">-4.53</span></td>
+      <td><span class="pos">10.25</span></td>
+      <td>393.29</td>
+      <td>353.35</td>
+      <td>0.95</td>
+    </tr>
+    <tr>
+      <td>伯克希尔B(传统价值与宏观现金池)</td>
+      <td>BRK-B</td>
+      <td>514.95</td>
+      <td><span class="pos">0.90</span></td>
+      <td><span class="pos">2.17</span></td>
+      <td><span class="pos">4.76</span></td>
+      <td>504.32</td>
+      <td>492.54</td>
+      <td>1.00</td>
+    </tr>
+    <tr>
+      <td>中国石油(核心资产与高股息)</td>
+      <td>601857.SS</td>
+      <td>11.11</td>
+      <td><span class="pos">0.63</span></td>
+      <td><span class="pos">1.74</span></td>
+      <td><span class="pos">22.09</span></td>
+      <td>11.19</td>
+      <td>10.78</td>
+      <td>0.69</td>
+    </tr>
+    <tr>
+      <td>京东集团-SW(自营电商与物流)</td>
+      <td>9618.HK</td>
+      <td>106.30</td>
+      <td><span class="pos">0.28</span></td>
+      <td><span class="neg">-4.23</span></td>
+      <td><span class="neg">-13.86</span></td>
+      <td>109.93</td>
+      <td>113.56</td>
+      <td>0.57</td>
+    </tr>
+    <tr>
+      <td>中国海洋石油(高股息传统能源)</td>
+      <td>0883.HK</td>
+      <td>24.48</td>
+      <td><span class="pos">0.08</span></td>
+      <td><span class="pos">0.25</span></td>
+      <td><span class="pos">21.91</span></td>
+      <td>25.02</td>
+      <td>24.51</td>
+      <td>0.86</td>
+    </tr>
+    <tr>
+      <td>五粮液(高端白酒次龙头)</td>
+      <td>000858.SZ</td>
+      <td>69.70</td>
+      <td><span class="neg">-0.21</span></td>
+      <td><span class="neg">-3.94</span></td>
+      <td><span class="neg">-44.95</span></td>
+      <td>71.17</td>
+      <td>92.56</td>
+      <td>0.42</td>
+    </tr>
+    <tr>
+      <td>美团-W(本地生活寡头)</td>
+      <td>3690.HK</td>
+      <td>74.75</td>
+      <td><span class="neg">-0.40</span></td>
+      <td><span class="neg">-12.62</span></td>
+      <td><span class="neg">-26.72</span></td>
+      <td>79.13</td>
+      <td>86.47</td>
+      <td>0.35</td>
+    </tr>
+    <tr>
+      <td>贵州茅台(A股消费定价锚)</td>
+      <td>600519.SS</td>
+      <td>1272.75</td>
+      <td><span class="neg">-0.41</span></td>
+      <td><span class="neg">-1.94</span></td>
+      <td><span class="neg">-14.04</span></td>
+      <td>1296.30</td>
+      <td>1361.08</td>
+      <td>0.50</td>
+    </tr>
+    <tr>
+      <td>长江电力(无风险利率A股平替)</td>
+      <td>600900.SS</td>
+      <td>28.50</td>
+      <td><span class="neg">-0.45</span></td>
+      <td><span class="pos">1.35</span></td>
+      <td><span class="pos">1.93</span></td>
+      <td>28.24</td>
+      <td>27.40</td>
+      <td>0.64</td>
+    </tr>
+    <tr>
+      <td>中国神华(煤炭核心与高股息)</td>
+      <td>601088.SS</td>
+      <td>46.98</td>
+      <td><span class="neg">-0.47</span></td>
+      <td><span class="pos">2.80</span></td>
+      <td><span class="pos">24.35</span></td>
+      <td>47.27</td>
+      <td>44.27</td>
+      <td>0.57</td>
+    </tr>
+    <tr>
+      <td>比亚迪(全球新能源车龙头)</td>
+      <td>002594.SZ</td>
+      <td>84.30</td>
+      <td><span class="neg">-1.32</span></td>
+      <td><span class="neg">-5.84</span></td>
+      <td><span class="neg">-21.37</span></td>
+      <td>88.11</td>
+      <td>94.20</td>
+      <td>0.72</td>
+    </tr>
+    <tr>
+      <td>中国平安A(综合金融与寿险)</td>
+      <td>601318.SS</td>
+      <td>53.90</td>
+      <td><span class="neg">-1.52</span></td>
+      <td><span class="pos">5.03</span></td>
+      <td><span class="neg">-6.72</span></td>
+      <td>55.43</td>
+      <td>58.60</td>
+      <td>0.65</td>
+    </tr>
+    <tr>
+      <td>摩根大通(全球银行风向标)</td>
+      <td>JPM</td>
+      <td>350.13</td>
+      <td><span class="neg">-1.71</span></td>
+      <td><span class="neg">-3.50</span></td>
+      <td><span class="pos">13.35</span></td>
+      <td>356.10</td>
+      <td>319.70</td>
+      <td>1.73</td>
+    </tr>
+    <tr>
+      <td>招商银行A(零售银行标杆)</td>
+      <td>600036.SS</td>
+      <td>41.10</td>
+      <td><span class="neg">-1.75</span></td>
+      <td><span class="pos">7.34</span></td>
+      <td><span class="neg">-4.20</span></td>
+      <td>40.41</td>
+      <td>39.43</td>
+      <td>0.76</td>
+    </tr>
+    <tr>
+      <td>紫金矿业(铜金资源核心)</td>
+      <td>601899.SS</td>
+      <td>31.68</td>
+      <td><span class="neg">-1.77</span></td>
+      <td><span class="neg">-5.60</span></td>
+      <td><span class="pos">27.02</span></td>
+      <td>33.61</td>
+      <td>33.15</td>
+      <td>0.55</td>
+    </tr>
+    <tr>
+      <td>工商银行(宇宙大行收息)</td>
+      <td>1398.HK</td>
+      <td>7.49</td>
+      <td><span class="neg">-2.09</span></td>
+      <td><span class="pos">2.96</span></td>
+      <td><span class="pos">29.36</span></td>
+      <td>7.54</td>
+      <td>6.76</td>
+      <td>0.68</td>
+    </tr>
+    <tr>
+      <td>小米集团-W(AIoT与消费电子)</td>
+      <td>1810.HK</td>
+      <td>26.50</td>
+      <td><span class="neg">-2.43</span></td>
+      <td><span class="pos">1.22</span></td>
+      <td><span class="neg">-51.60</span></td>
+      <td>27.47</td>
+      <td>31.88</td>
+      <td>0.53</td>
+    </tr>
+    <tr>
+      <td>建设银行(高股息国有大行)</td>
+      <td>0939.HK</td>
+      <td>9.61</td>
+      <td><span class="neg">-2.83</span></td>
+      <td><span class="pos">7.25</span></td>
+      <td><span class="pos">25.95</span></td>
+      <td>9.46</td>
+      <td>8.39</td>
+      <td>0.67</td>
+    </tr>
+    <tr>
+      <td>联想集团(AIPC与服务器)</td>
+      <td>0992.HK</td>
+      <td>31.20</td>
+      <td><span class="neg">-2.92</span></td>
+      <td><span class="neg">-0.45</span></td>
+      <td><span class="pos">192.41</span></td>
+      <td>30.87</td>
+      <td>16.35</td>
+      <td>0.56</td>
+    </tr>
+    <tr>
+      <td>台积电(全球晶圆代工垄断者)</td>
+      <td>TSM</td>
+      <td>418.01</td>
+      <td><span class="neg">-3.52</span></td>
+      <td><span class="neg">-1.96</span></td>
+      <td><span class="pos">59.92</span></td>
+      <td>421.29</td>
+      <td>376.61</td>
+      <td>1.55</td>
+    </tr>
+    <tr>
+      <td>AMD(算力二把手)</td>
+      <td>AMD</td>
+      <td>493.41</td>
+      <td><span class="neg">-4.40</span></td>
+      <td><span class="neg">-4.08</span></td>
+      <td><span class="pos">206.16</span></td>
+      <td>480.99</td>
+      <td>348.30</td>
+      <td>1.38</td>
+    </tr>
+    <tr>
+      <td>宁德时代(全球动力电池寡头)</td>
+      <td>300750.SZ</td>
+      <td>316.36</td>
+      <td><span class="neg">-6.16</span></td>
+      <td><span class="neg">-20.16</span></td>
+      <td><span class="pos">2.38</span></td>
+      <td>358.16</td>
+      <td>385.77</td>
+      <td>1.89</td>
+    </tr>
+    <tr>
+      <td>阿斯麦(光刻机垄断者)</td>
+      <td>ASML</td>
+      <td>1575.15</td>
+      <td><span class="neg">-7.25</span></td>
+      <td><span class="neg">-14.58</span></td>
+      <td><span class="pos">81.62</span></td>
+      <td>1723.64</td>
+      <td>1497.91</td>
+      <td>1.76</td>
+    </tr>
+  </tbody>
+</table></div>
+    </div>
+  
+</div>
+</body>
+</html>
