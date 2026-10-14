@@ -40,3 +40,11 @@ jobs:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./public # 把刚才生成的 index.html 发布为网站
         force_orphan: true
+
+    - name: 6. 把日报发到邮箱 (凭据在仓库 Secrets, 未配置则跳过)
+      env:
+        MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+        MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        MAIL_TO: ${{ secrets.MAIL_TO }}
+        REPORT_URL: https://haoanma.github.io/haoanYT2605report/
+      run: python code/send_email.py
