@@ -15,7 +15,7 @@ import os
 import json
 import csv
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil import tz
 import numpy as np
 import pandas as pd
@@ -265,6 +265,14 @@ def _compute_adx20_switch_signal(close: pd.Series, high: pd.Series, low: pd.Seri
 #    QQQ 及其他: Model 08 Diamond Hands
 #    TQQQ:       Model 08 基础 + Apollo 叠加
 # ==========================================
+DATA_ASOF = {}  # 记录美股最新一根K线的日期，显示在报告头部
+
+def _yf_window(days: int) -> dict:
+    """显式给出 start/end，end 取 UTC 明天，确保美东收盘后到午夜之间运行也能拿到当天K线"""
+    now = datetime.now(tz=tz.UTC)
+    return {"start": (now - timedelta(days=days)).strftime("%Y-%m-%d"),
+            "end": (now + timedelta(days=1)).strftime("%Y-%m-%d")}
+
 def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFrame:
     if not ticker_map: return pd.DataFrame()
     tickers = list(ticker_map.keys())
@@ -273,7 +281,7 @@ def fetch_and_calculate(ticker_map: dict, history_days: int = 500) -> pd.DataFra
     raw_data = None
     for attempt in range(3):
         try:
-            raw_data = yf.download(fetch_list, period=f"{history_days}d", interval="1d", auto_adjust=False, group_by="ticker", threads=False, progress=False)
+            raw_data = yf.download(fetch_list, **_yf_window(history_days), interval="1d", auto_adjust=False, group_by="ticker", threads=False, progress=False)
             if raw_data is not None and not raw_data.empty: break
             time.sleep(2)
         except: time.sleep(2)
@@ -413,7 +421,7 @@ def _render_action_row(tk_label: str, model_tag_text: str, signal: str, color: s
 
 def get_today_action_block(tickers=["QQQ", "TQQQ"]):
     try:
-        df_raw = yf.download(tickers, period="2y", auto_adjust=False, group_by="ticker", threads=False, progress=False)
+        df_raw = yf.download(tickers, **_yf_window(730), auto_adjust=False, group_by="ticker", threads=False, progress=False)
         if df_raw.empty: return None
 
         html_rows = ""
@@ -421,6 +429,7 @@ def get_today_action_block(tickers=["QQQ", "TQQQ"]):
             if not hasattr(df_raw.columns, "levels") or tk not in df_raw.columns.levels[0]: continue
             close = df_raw[tk]["Close"].dropna()
             if len(close) < 252: continue
+            if tk == "QQQ": DATA_ASOF["US"] = close.index[-1].strftime("%Y-%m-%d")
 
             ma200 = close.rolling(200).mean()
 
@@ -587,7 +596,7 @@ HTML_TEMPLATE = r"""
 <body>
 <div class="wrap">
   <h1>{{ title }}</h1>
-  <div class="meta">{{ report_date }} | yfinance 驱动</div>
+  <div class="meta">{{ report_date }} | 美股数据截至 {{ data_asof }} | yfinance 驱动</div>
   {% for b in blocks %}
     <div class="card">
       <h2>{{ b.title }}</h2>
@@ -688,7 +697,7 @@ def main():
 
     env = Environment(loader=BaseLoader())
     html_content = env.from_string(HTML_TEMPLATE).render(
-        title=cfg.get("title", "每日投资监控雷达"), report_date=report_date, blocks=blocks,
+        title=cfg.get("title", "每日投资监控雷达"), report_date=report_date, data_asof=DATA_ASOF.get("US", "未知"), blocks=blocks,
         base_font_px=cfg.get("base_font_px", 14), table_font_px=cfg.get("table_font_px", 12)
     )
 
